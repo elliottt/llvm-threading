@@ -1,6 +1,7 @@
 
 
 declare i8* @malloc(i32)
+declare void @free(i8*)
 declare void @llvm.memset.p0i8.i32(i8*, i8, i32, i32, i1)
 
 %stack = type i8*
@@ -35,7 +36,9 @@ define private %stack @get_stack(%tcb* %tcb) alwaysinline {
 }
 
 
-%tcb_queue = type { %tcb*, %tcb_queue, %tcb_queue }*
+%tcb_node = type { %tcb*, %tcb_queue, %tcb_queue }
+
+%tcb_queue = type %tcb_node*
 
 ; allocate a tcb queue node, and fill it with zeros.  set the tcb element to the
 ; pointer provided
@@ -152,10 +155,6 @@ cons:
 	ret %tcb_queue %head
 }
 
-define void @yield() {
-	ret void
-}
-
 
 %task = type void(i8*)
 
@@ -175,7 +174,7 @@ define void @init_threading() {
 	ret void
 }
 
-define void @create_thread(%task* %t, i8* %data, i32 %stackSize) {
+define void @create_thread(%task* %t, i8* %data, i32 %stackSize) naked {
 	; save the current state, and push it to the end of the running queue
 	%cur_s   = call %stack @llvm.stacksave()
 	%cur_n   = load %tcb_queue* @current_task
@@ -201,9 +200,17 @@ define void @create_thread(%task* %t, i8* %data, i32 %stackSize) {
 	unreachable
 }
 
-define void @start_thread(%task* %t, i8* %data) {
+define void @start_thread(%task* %t, i8* %data) naked {
 	; run the body of the thread
 	call void %t(i8* %data)
+
+	; cleanup the current thread
+	%cur         = load %tcb_queue* @current_task
+	%cur_tcb     = call %tcb* @get_tcb(%tcb_queue %cur)
+	%cur_ptr     = bitcast %tcb_queue %cur to i8*
+	%cur_tcb_ptr = bitcast %tcb* %cur_tcb to i8*
+	call void @free(i8* %cur_ptr)
+	call void @free(i8* %cur_tcb_ptr)
 
 	; the thread has exited, force a reschedule
 	%next = call %tcb_queue @dequeue(%tcb_queue* @running_queue)
@@ -214,6 +221,27 @@ define void @start_thread(%task* %t, i8* %data) {
 	%s   = call %stack @get_stack(%tcb* %tcb)
 
 	; restore the stack, and jump back into the original task
+	call void @llvm.stackrestore(%stack %s)
+	ret void
+}
+
+define void @yield() naked {
+	; save the current context
+	%cur     = load %tcb_queue* @current_task
+	%cur_s   = call %stack @llvm.stacksave()
+	%cur_tcb = call %tcb* @get_tcb(%tcb_queue %cur)
+	call void @set_stack(%tcb* %cur_tcb, %stack %cur_s)
+
+	; dequeue the next task, queue the current one
+	%next = call %tcb_queue @dequeue(%tcb_queue* @running_queue)
+	call void @enqueue(%tcb_queue* @running_queue, %tcb_queue %cur)
+
+	; load the next task
+	store %tcb_queue %next, %tcb_queue* @current_task
+	%tcb = call %tcb* @get_tcb(%tcb_queue %next)
+	%s   = call %stack @get_stack(%tcb* %tcb)
+
+	; restore the stack and jump back into the task
 	call void @llvm.stackrestore(%stack %s)
 	ret void
 }

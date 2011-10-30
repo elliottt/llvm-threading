@@ -12,6 +12,8 @@ typedef int stack_size;
 
 extern void create_thread(task, void*, stack_size);
 
+extern void yield();
+
 #ifdef __cplusplus
 }
 #endif

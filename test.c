@@ -4,7 +4,9 @@
 #include "thread.h"
 
 void test(void *data) {
-	printf("task!\n");
+	printf("2\n");
+	yield();
+	printf("3\n");
 
 	return;
 }
@@ -12,10 +14,12 @@ void test(void *data) {
 int main() {
 	init_threading();
 
-	printf("main thread\n");
+	printf("1\n");
 
 	create_thread(test, NULL, 1024);
-	printf("after create_thread\n");
+	printf("4\n");
+	yield();
+	printf("5\n");
 
 	return 0;
 }
