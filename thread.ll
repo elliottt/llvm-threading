@@ -174,7 +174,8 @@ define void @init_threading() {
 	ret void
 }
 
-define void @create_thread(%task* %t, i8* %data, i32 %stackSize) naked {
+define void @create_thread(%task* %t, i8* %data, i32 %stackSize)
+	naked noreturn {
 	; save the current state, and push it to the end of the running queue
 	%cur_s   = call %stack @llvm.stacksave()
 	%cur_n   = load %tcb_queue* @current_task
