@@ -132,6 +132,7 @@ append:
 
 define %tcb_queue @dequeue(%tcb_queue* %q) {
 	%head = load %tcb_queue* %q
+
 	%isEmpty = icmp eq %tcb_queue %head, null
 	br i1 %isEmpty, label %empty, label %dequeue
 
@@ -235,8 +236,8 @@ define void @start_thread(%task* %t, i8* %data) naked {
 
 define void @yield() naked {
 	; save the current context
-	%cur     = call %tcb_queue @dequeue(%tcb_queue* @running_queue)
 	%cur_s   = call %stack @llvm.stacksave()
+	%cur     = call %tcb_queue @dequeue(%tcb_queue* @running_queue)
 	%cur_tcb = call %tcb* @get_tcb(%tcb_queue %cur)
 	call void @set_stack(%tcb* %cur_tcb, %stack %cur_s)
 
