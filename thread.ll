@@ -92,6 +92,16 @@ define private %tcb_queue @get_prev(%tcb_queue %q) alwaysinline {
 	ret %tcb_queue %prev
 }
 
+define void @enqueue_front(%tcb_queue* %q, %tcb_queue %n) {
+	; put the node on the tail of the queue
+	call void @enqueue(%tcb_queue* %q, %tcb_queue %n)
+
+	; set the new head
+	store %tcb_queue %n, %tcb_queue* %q
+
+	ret void
+}
+
 define void @enqueue(%tcb_queue* %q, %tcb_queue %n) {
 	%head = load %tcb_queue* %q
 
@@ -159,7 +169,6 @@ cons:
 %task = type void(i8*)
 
 @running_queue = global %tcb_queue null
-@current_task  = global %tcb_queue null
 
 ; create the main running task, and global queues
 define void @init_threading() {
@@ -168,8 +177,7 @@ define void @init_threading() {
 
 	call void @set_stack(%tcb* %tcb, %stack null)
 	call void @set_tcb(%tcb_queue %node, %tcb* %tcb)
-	store %tcb_queue null, %tcb_queue* @running_queue
-	store %tcb_queue %node, %tcb_queue* @current_task
+	call void @enqueue(%tcb_queue* @running_queue, %tcb_queue %node)
 
 	ret void
 }
@@ -178,7 +186,7 @@ define void @create_thread(%task* %t, i8* %data, i32 %stackSize)
 	naked noreturn {
 	; save the current state, and push it to the end of the running queue
 	%cur_s   = call %stack @llvm.stacksave()
-	%cur_n   = load %tcb_queue* @current_task
+	%cur_n   = call %tcb_queue @dequeue(%tcb_queue* @running_queue)
 	%cur_tcb = call %tcb* @get_tcb(%tcb_queue %cur_n)
 	call void @set_stack(%tcb* %cur_tcb, %stack %cur_s)
 	call void @enqueue(%tcb_queue* @running_queue, %tcb_queue %cur_n)
@@ -192,7 +200,7 @@ define void @create_thread(%task* %t, i8* %data, i32 %stackSize)
 
 	call void @set_stack(%tcb* %tcb, %stack %top)
 	call void @set_tcb(%tcb_queue %node, %tcb* %tcb)
-	store %tcb_queue %node, %tcb_queue* @current_task
+	call void @enqueue_front(%tcb_queue* @running_queue, %tcb_queue %node)
 
 	; set the new stack, and call the task function
 	call void @llvm.stackrestore(%stack %top)
@@ -206,7 +214,7 @@ define void @start_thread(%task* %t, i8* %data) naked {
 	call void %t(i8* %data)
 
 	; cleanup the current thread
-	%cur         = load %tcb_queue* @current_task
+	%cur         = call %tcb_queue @dequeue(%tcb_queue* @running_queue)
 	%cur_tcb     = call %tcb* @get_tcb(%tcb_queue %cur)
 	%cur_ptr     = bitcast %tcb_queue %cur to i8*
 	%cur_tcb_ptr = bitcast %tcb* %cur_tcb to i8*
@@ -214,8 +222,7 @@ define void @start_thread(%task* %t, i8* %data) naked {
 	call void @free(i8* %cur_tcb_ptr)
 
 	; the thread has exited, force a reschedule
-	%next = call %tcb_queue @dequeue(%tcb_queue* @running_queue)
-	store %tcb_queue %next, %tcb_queue* @current_task
+	%next = load %tcb_queue* @running_queue
 
 	; pull the stack pointer out of the tcb
 	%tcb = call %tcb* @get_tcb(%tcb_queue %next)
@@ -228,19 +235,18 @@ define void @start_thread(%task* %t, i8* %data) naked {
 
 define void @yield() naked {
 	; save the current context
-	%cur     = load %tcb_queue* @current_task
+	%cur     = call %tcb_queue @dequeue(%tcb_queue* @running_queue)
 	%cur_s   = call %stack @llvm.stacksave()
 	%cur_tcb = call %tcb* @get_tcb(%tcb_queue %cur)
 	call void @set_stack(%tcb* %cur_tcb, %stack %cur_s)
 
 	; dequeue the next task, queue the current one
-	%next = call %tcb_queue @dequeue(%tcb_queue* @running_queue)
 	call void @enqueue(%tcb_queue* @running_queue, %tcb_queue %cur)
 
 	; load the next task
-	store %tcb_queue %next, %tcb_queue* @current_task
-	%tcb = call %tcb* @get_tcb(%tcb_queue %next)
-	%s   = call %stack @get_stack(%tcb* %tcb)
+	%next = load %tcb_queue* @running_queue
+	%tcb  = call %tcb* @get_tcb(%tcb_queue %next)
+	%s    = call %stack @get_stack(%tcb* %tcb)
 
 	; restore the stack and jump back into the task
 	call void @llvm.stackrestore(%stack %s)
