@@ -3,23 +3,25 @@
 
 #include "thread.h"
 
-void test(void *data) {
-	printf("2\n");
-	yield();
-	printf("3\n");
+extern void *current_thread;
 
-	return;
+#define runTest(x)              \
+{                               \
+    while(1) {                  \
+        printf("%li\n", x);     \
+        yield();                \
+    }                           \
 }
 
+void test0(void *data) { runTest(0); }
+void test1(void *data) { runTest(1); }
+void test2(void *data) { runTest(2); }
+
 int main() {
-	init_threading();
-
-	printf("1\n");
-
-	create_thread(test, NULL, 1024);
-	printf("4\n");
-	yield();
-	printf("5\n");
-
-	return 0;
+    init_threading();
+    printf("current-thread = %p\n", current_thread);
+    create_thread(test1, (void*)1, 1024);
+    create_thread(test2, (void*)2, 10240);
+    test0((void*)0);
+    return 0;
 }
