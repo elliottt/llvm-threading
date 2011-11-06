@@ -5,14 +5,6 @@
 
 extern void *current_thread;
 
-#define runTest(x)              \
-{                               \
-    while(1) {                  \
-        printf("%li\n", x);     \
-        yield();                \
-    }                           \
-}
-
 void test(void *data) {
     while(1) {
         printf("%li\n", (long)data);
@@ -21,10 +13,11 @@ void test(void *data) {
 }
 
 int main() {
+    long i = 0;
+
     init_threading();
-    printf("current-thread = %p\n", current_thread);
-    create_thread(test, (void*)1, 10240);
-    create_thread(test, (void*)2, 10240);
+    for(i = 1; i < 10; i++)
+      create_thread(test, (void*)i, 10240);
     test((void*)0);
     return 0;
 }

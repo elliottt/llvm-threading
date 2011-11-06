@@ -120,14 +120,12 @@ define private void @start_thread(%task* %t, i8* %data) naked noreturn {
     ret void
 }
 
-declare i32 @printf(i8* noalias nocapture, ...)
-@str = internal constant [21 x i8] c"Current thread = %p\0A\00"
+;declare i32 @printf(i8* noalias nocapture, ...)
+;@str = internal constant [21 x i8] c"Current thread = %p\0A\00"
 
 define void @yield() naked {
     ; get the current thread object
     %cur_t   = load %TCB** @current_thread
-    %caststr = getelementptr [21 x i8]* @str, i32 0, i32 0
-    %meh = call i32 (i8*, ...)* @printf(i8* %caststr, %TCB* %cur_t)
     ; get the current stack and bang it into the structure
     %cur_s   = call %Stack @llvm.stacksave()
     %stackPP = getelementptr %TCB* %cur_t, i32 0, i32 0
