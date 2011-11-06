@@ -1,4 +1,3 @@
-
 LLCFLAGS ?=
 
 %.bc: %.ll
@@ -23,7 +22,8 @@ runQCqueue: QCqueue
 
 thread.o: queue.o
 
+test.o: CFLAGS := -g -mno-red-zone -fomit-frame-pointer
 test: ASFLAGS := -g
 test: CFLAGS := -g
 test: test.o thread.o queue.o
-	$(CC) -o $@ $^
+	$(CC) -o $@ -mno-red-zone $^
