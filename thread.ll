@@ -36,8 +36,8 @@ define %TCB* @alloc_tcb() {
 	call void @llvm.memset.p0i8.i32(i8* %ptr, i8 0, i32 %sz_tcb,
 			i32 1, i1 0)
 
-	%TCB = bitcast i8* %ptr to %TCB*
-	ret %TCB* %TCB
+	%tcb = bitcast i8* %ptr to %TCB*
+	ret %TCB* %tcb
 }
 
 define private void @set_stack(%TCB* %tcb, %Stack %s) alwaysinline {
