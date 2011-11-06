@@ -23,7 +23,7 @@ void test(void *data) {
 int main() {
     init_threading();
     printf("current-thread = %p\n", current_thread);
-    create_thread(test, (void*)1, 1024);
+    create_thread(test, (void*)1, 10240);
     create_thread(test, (void*)2, 10240);
     test((void*)0);
     return 0;
