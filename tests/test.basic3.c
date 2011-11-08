@@ -6,13 +6,16 @@
 extern void *current_thread;
 
 void test(void *data) {
-    while(1) {
+    int i;
+
+    for(i = 0; i < 10; i++) {
         printf("%li\n", (long)data);
         yield();
     }
 }
 
-int main() {
+int main(int argc, char **argv)
+{
     long i = 0;
 
     init_threading();
