@@ -2,9 +2,16 @@ declare i8* @malloc(i32)
 declare void @free(i8*)
 declare void @llvm.memset.p0i8.i32(i8*, i8, i32, i32, i1)
 
-%Stack = type i8*
-%Queue = type opaque
-%TCB = type { %Stack }
+%Stack      = type i8*
+%Queue      = type opaque
+%TCB        = type { %Stack, i8* }
+%ChanWaiter = type { %TCB*, i8* }
+%Channel    = type {
+    i8      ; State: 0 open, 1 reader waiting, 2 writer waiting
+  , %Queue* ; Invalid in open state
+            ; Queue of %TCBs/pointers in reader waiting state
+            ; Queue of %TCBs in writer waiting state
+  }
 
 declare %Queue* @newQueue()
 declare void @enqueue(%Queue*, i8*)
@@ -38,18 +45,6 @@ define %TCB* @alloc_tcb() {
 
 	%tcb = bitcast i8* %ptr to %TCB*
 	ret %TCB* %tcb
-}
-
-define private void @set_stack(%TCB* %tcb, %Stack %s) alwaysinline {
-	%ptr_stack = getelementptr %TCB* %tcb, i32 0, i32 0
-	store %Stack %s, %Stack* %ptr_stack
-	ret void
-}
-
-define private %Stack @get_stack(%TCB* %tcb) alwaysinline {
-	%ptr_stack = getelementptr %TCB* %tcb, i32 0, i32 0
-	%s = load %Stack* %ptr_stack
-	ret %Stack %s
 }
 
 %task = type void(i8*)
@@ -87,6 +82,8 @@ define void @create_thread(%task* %t, i8* %val, i32 %stackSize) naked noreturn {
     %topi    = ptrtoint %Stack %top to i64
     %topm8i  = sub i64 %topi, 8
     %topm8   = inttoptr i64 %topm8i to %Stack
+    %tcbstb  = getelementptr %TCB* %tcb, i32 0, i32 1
+    store i8* %s, i8** %tcbstb
     store %TCB* %tcb, %TCB** @current_thread
     ; "restore" the stack and call into the function we want
     call void @llvm.stackrestore(%Stack %topm8)
@@ -102,7 +99,7 @@ define private void @start_thread(%task* %t, i8* %data) naked noreturn {
     ; cleanup the current thread
     %cur     = load %TCB** @current_thread
     %curi8   = bitcast %TCB* %cur to i8*
-    %stackP  = getelementptr %TCB* %cur, i32 0, i32 0
+    %stackP  = getelementptr %TCB* %cur, i32 0, i32 1
     %stack   = load %Stack* %stackP
     call void @free(i8* %stack)
     call void @free(i8* %curi8)
@@ -123,7 +120,8 @@ define private void @start_thread(%task* %t, i8* %data) naked noreturn {
 ;declare i32 @printf(i8* noalias nocapture, ...)
 ;@str = internal constant [21 x i8] c"Current thread = %p\0A\00"
 
-define void @yield() naked {
+define void @yield() naked
+{
     ; get the current thread object
     %cur_t   = load %TCB** @current_thread
     ; get the current stack and bang it into the structure
