@@ -7,7 +7,7 @@ ASFLAGS     = -g -c
 CC          = gcc
 CFLAGS      = -g -c -fomit-frame-pointer -fomit-frame-pointer -Iinclude/
 LD          = gcc
-LDFLAGS     =
+LDFLAGS     = -g
 GHC         = ghc
 GHCFLAGS    = -package QuickCheck
 
