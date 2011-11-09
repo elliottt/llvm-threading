@@ -1,4 +1,6 @@
 *.swp
 *.s
 *.o
+*.elf
+*.hi
 test
