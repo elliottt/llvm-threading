@@ -27,11 +27,15 @@ void receiver(void *dead)
   }
 }
 
-int main(int argc, char **argv)
+void initThread(void *dead)
 {
-    init_threading();
     chan = create_channel();
     create_thread(sender, (void*)0, 10240);
     receiver(0);
+}
+
+int main(int argc, char **argv)
+{
+    run_threaded_system(initThread, (void*)0, 10240);
     return 0;
 }

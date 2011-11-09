@@ -23,12 +23,16 @@ void test2(void *data) {
     }
 }
 
-int main(int argc, char **argv)
+void initialThread(void *dead)
 {
     long i = 0;
 
-    init_threading();
     create_thread(test1, (void*)0, 10240);
     test2((void*)1);
+}
+
+int main(int argc, char **argv)
+{
+    run_threaded_system(initialThread, 0, 10240);
     return 0;
 }

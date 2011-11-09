@@ -16,6 +16,7 @@ declare void @llvm.memset.p0i8.i32(i8*, i8, i32, i32, i1)
 declare %Queue* @newQueue()
 declare void @enqueue(%Queue*, i8*)
 declare i8* @dequeue(%Queue*)
+declare i64 @queueLength(%Queue* %ptr)
 
 define private void @enqueueTCB(%Queue* %queue, %TCB* %tcb)
 {
@@ -51,21 +52,27 @@ define %TCB* @alloc_tcb() {
 
 @running_queue  = global %Queue* null
 @current_thread = global %TCB* null
+@original_stack = global %Stack null
 
 ; create the main running task, and global queues
-define void @init_threading() {
-    %tcb   = call %TCB* @alloc_tcb()
+define void @run_threaded_system(%task* %t, i8* %val, i32 %stackSize) naked
+{
+    %cur_s = call %Stack @llvm.stacksave()
     %queue = call %Queue* @newQueue()
-
     store %Queue* %queue, %Queue** @running_queue
-    store %TCB* %tcb, %TCB** @current_thread
-
-    ret void
+    store %Stack %cur_s, %Stack* @original_stack
+    call void @create_thread(%task* %t, i8* %val, i32 %stackSize)
+    ret void ; don't think we can get here, but ...
 }
 
-define void @create_thread(%task* %t, i8* %val, i32 %stackSize) naked noreturn {
+define void @create_thread(%task* %t, i8* %val, i32 %stackSize) naked noreturn
+{
     ; get the current thread object
     %cur_t   = load %TCB** @current_thread
+    %isNull  = icmp eq %TCB* %cur_t, null
+    br i1 %isNull, label %createNew, label %saveCurrent
+
+saveCurrent:
     ; get the current stack and bang it into the structure
     %cur_s   = call %Stack @llvm.stacksave()
     %stackPP = getelementptr %TCB* %cur_t, i32 0, i32 0
@@ -75,6 +82,9 @@ define void @create_thread(%task* %t, i8* %val, i32 %stackSize) naked noreturn {
     call void @enqueueTCB(%Queue* %queue, %TCB* %cur_t)
     ; there is no currently running thread!
     store %TCB* null, %TCB** @current_thread
+    br label %createNew
+
+createNew:
     ; create the new TCB and set it as the currently-running thread
     %tcb     = call %TCB* @alloc_tcb()
     %s       = call %Stack @malloc(i32 %stackSize)
@@ -93,7 +103,8 @@ define void @create_thread(%task* %t, i8* %val, i32 %stackSize) naked noreturn {
     unreachable
 }
 
-define private void @start_thread(%task* %t, i8* %data) naked noreturn {
+define private void @start_thread(%task* %t, i8* %data) naked noreturn
+{
     ; run the body of the thread
     call void %t(i8* %data)
     ; cleanup the current thread
@@ -104,17 +115,8 @@ define private void @start_thread(%task* %t, i8* %data) naked noreturn {
     call void @free(i8* %stack)
     call void @free(i8* %curi8)
     store %TCB* null, %TCB** @current_thread
-    ; yank the next thread off the queue
-    %queue  = load %Queue** @running_queue
-    %next   = call %TCB* @dequeueTCB(%Queue* %queue)
-    ; set it as the next thread
-    store %TCB* %next, %TCB** @current_thread
-    ; restore its stack
-    %stackR = getelementptr %TCB* %next, i32 0, i32 0
-    %stack2 = load %Stack* %stackR
-    call void @llvm.stackrestore(%Stack %stack2)
-    ; return to its caller
-    ret void
+    call void @schedule()
+    unreachable
 }
 
 ;declare i32 @printf(i8* noalias nocapture, ...)
@@ -140,10 +142,19 @@ define void @yield() naked
 define private void @schedule() naked
 {
     ; yank the next thread off the queue
-    %queue   = load %Queue** @running_queue
+    %queue  = load %Queue** @running_queue
     %next   = call %TCB* @dequeueTCB(%Queue* %queue)
     ; set it as the next thread
     store %TCB* %next, %TCB** @current_thread
+    %nothr  = icmp eq %TCB* %next, null
+    br i1 %nothr, label %emptyRunQueue, label %goodQueue
+
+emptyRunQueue:
+    %origst = load %Stack* @original_stack
+    call void @llvm.stackrestore(%Stack %origst)
+    ret void
+
+goodQueue:
     ; restore its stack
     %stackP = getelementptr %TCB* %next, i32 0, i32 0
     %stack  = load %Stack* %stackP
@@ -218,6 +229,17 @@ good_queue:
     call void @enqueueTCB(%Queue* %tqueue, %TCB* %thread)
     ; Write the value to the out value and return
     store i8* %val, i8** %valp
+    ; Is this the last reader waiting for us?
+    %count  = call i64 @queueLength(%Queue* %queue)
+    %empty  = icmp eq i64 %count, 0
+    br i1 %empty, label %nowEmpty, label %allDone
+
+nowEmpty:
+    ; The queue went from reader waiting to empty, so update the state
+    store i8 0, i8* %ptrst
+    ret i32 0
+
+allDone:
     ret i32 0
 
 bad_queue:
@@ -273,6 +295,17 @@ good_queue:
     call void @enqueueTCB(%Queue* %tqueue, %TCB* %thread)
     ; Write the value to the out value and return
     store i8* %val, i8** %valp
+    ; Is this the last writer waiting for us?
+    %count  = call i64 @queueLength(%Queue* %queue)
+    %empty  = icmp eq i64 %count, 0
+    br i1 %empty, label %nowEmpty, label %allDone
+
+nowEmpty:
+    ; The queue went from writer waiting to empty, so update the state
+    store i8 0, i8* %ptrst
+    ret i32 0
+
+allDone:
     ret i32 0
 
 bad_queue:
@@ -285,7 +318,7 @@ bad_chan:
 ; this needs to be no-inline, so that when we return to the current thread
 ; when the receive or send happens, we "return" back to the main body of the
 ; calling function
-define private void @addWaiterAndBlock(%Channel* %chan, i8* %val) noinline
+define private void @addWaiterAndBlock(%Channel* %chan, i8* %val) noinline naked
 {
     ; get the current thread object
     %cur_t   = load %TCB** @current_thread

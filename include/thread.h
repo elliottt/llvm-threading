@@ -5,13 +5,13 @@
 extern "C" {
 #endif
 
-extern void init_threading();
-
 typedef void(*task)(void *);
 typedef int stack_size;
 
 struct channel;
 typedef struct channel channel;
+
+extern void run_threaded_system(task, void*, stack_size);
 
 extern void create_thread(task, void*, stack_size);
 extern void yield();
