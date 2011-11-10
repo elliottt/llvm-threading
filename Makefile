@@ -11,6 +11,9 @@ LDFLAGS     = -g
 GHC         = ghc
 GHCFLAGS    = -package QuickCheck
 
+LLVM_FILES  = queue.ll sorted_list.ll thread.ll
+LLVM_OBJS   = $(patsubst %.ll,%.o,$(LLVM_FILES))
+
 include mk/build.mk
 
 TEST_SOURCES = $(shell find tests -name 'test*hs' -or -name 'test*c')
@@ -39,33 +42,3 @@ tests: $(TESTS_ELFS)
 
 clean:
 	rm -f *.o *.bc *.s *.elf tests/*.{o,bc,s,elf,hi}
-
-#LLCFLAGS ?=
-#
-#%.bc: %.ll
-#	llvm-as -o $@ $<
-#
-#%.s: %.bc
-#	llc $(LLCFLAGS) -o $@ $<
-#
-#
-#all: test
-#
-#clean:
-#	$(RM) thread.{bc,s,o} queue.{bc,s,o} test.o test
-#
-#QCqueue: queue.o QuickCheck/QC_DataStructures.hs
-#	ghc -o QCqueue QuickCheck/QC_DataStructures.hs queue.o
-#
-#runQCqueue: QCqueue
-#	./QCqueue
-#
-#.PRECIOUS: thread.s
-#
-#thread.o: queue.o
-#
-#test.o: CFLAGS := -g -mno-red-zone -fomit-frame-pointer
-#test: ASFLAGS := -g
-#test: CFLAGS := -g
-#test: test.o thread.o queue.o
-#	$(CC) -o $@ -mno-red-zone $^

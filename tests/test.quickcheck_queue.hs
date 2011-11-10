@@ -8,7 +8,7 @@ import Test.QuickCheck
 import Test.QuickCheck.Monadic
 
 main = do
-    report "---- QUEUE QUICKCHECK TESTS ----"
+    report "---- QUEUE QUICKCHECK TESTS ----\n"
     report "Checking null cases:\n"
     res1 <- dequeue nullPtr
     if res1 == nullPtr

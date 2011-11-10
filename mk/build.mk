@@ -34,13 +34,13 @@ quiet_cmd_c_to_o    = CC      $(notdir $@)
 	$(call cmd,c_to_o)
 
 # hs -> elf
-cmd_hs_to_elf       = $(GHC) -o $@ $(GHCFLAGS) -v0 $< queue.o thread.o
+cmd_hs_to_elf       = $(GHC) -o $@ $(GHCFLAGS) -v0 $< $(LLVM_OBJS)
 quiet_cmd_hs_to_elf = GHC     $(notdir $@)
-%.elf: %.hs queue.o thread.o
+%.elf: %.hs $(LLVM_OBJS)
 	$(call cmd,hs_to_elf)
 
 # linking target
-cmd_ld_done         = $(LD) $(LDFLAGS) -o $@ $< queue.o thread.o
+cmd_ld_done         = $(LD) $(LDFLAGS) -o $@ $< $(LLVM_OBJS)
 quiet_cmd_ld_done   = LD      $(notdir $@)
-%.elf: %.o queue.o thread.o
+%.elf: %.o $(LLVM_OBJS)
 	$(call cmd,ld_done)
