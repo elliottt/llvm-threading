@@ -1,9 +1,10 @@
 ifeq ($(V),)
-  quiet = quiet_
-  Q     = @
+  quiet      = quiet_
+  Q          = @
+  MAKEFLAGS += -s
 else
-  quiet =
-  Q     =
+  quiet      =
+  Q          =
 endif
 
 echo-cmd = $(if $($(quiet)cmd_$(1)), echo "  $($(quiet)cmd_$(1))";)
