@@ -4,7 +4,7 @@ declare void @llvm.memset.p0i8.i32(i8*, i8, i32, i32, i1)
 
 %Stack      = type i8*
 %Queue      = type opaque
-%TCB        = type { %Stack, i8* }
+%TCB        = type { %Stack, i8*, %Queue* }
 %ChanWaiter = type { %TCB*, i8* }
 %Channel    = type {
     i8      ; State: 0 open, 1 reader waiting, 2 writer waiting
@@ -37,15 +37,18 @@ declare void @llvm.stackrestore(%Stack)
 
 
 define %TCB* @alloc_tcb() {
-	%ptr_tcb = getelementptr %TCB* null, i32 1
-	%sz_tcb  = ptrtoint %TCB* %ptr_tcb to i32
-
-	%ptr = call i8* @malloc(i32 %sz_tcb)
-	call void @llvm.memset.p0i8.i32(i8* %ptr, i8 0, i32 %sz_tcb,
-			i32 1, i1 0)
-
-	%tcb = bitcast i8* %ptr to %TCB*
-	ret %TCB* %tcb
+    ; allocate and zero out the structure
+    %ptr_tcb = getelementptr %TCB* null, i32 1
+    %sz_tcb  = ptrtoint %TCB* %ptr_tcb to i32
+    %ptr     = call i8* @malloc(i32 %sz_tcb)
+    call void @llvm.memset.p0i8.i32(i8* %ptr, i8 0, i32 %sz_tcb, i32 1, i1 0)
+    ; initialize the join list
+    %tcb     = bitcast i8* %ptr to %TCB*
+    %jlist   = call %Queue* @newQueue()
+    %jlptr   = getelementptr %TCB* %tcb, i32 0, i32 2
+    store %Queue* %jlist, %Queue** %jlptr
+    ; return the new TCB
+    ret %TCB* %tcb
 }
 
 %task = type void(i8*)
@@ -61,11 +64,30 @@ define void @run_threaded_system(%task* %t, i8* %val, i32 %stackSize) naked
     %queue = call %Queue* @newQueue()
     store %Queue* %queue, %Queue** @running_queue
     store %Stack %cur_s, %Stack* @original_stack
-    call void @create_thread(%task* %t, i8* %val, i32 %stackSize)
+    call %TCB* @create_thread(%task* %t, i8* %val, i32 %stackSize)
     ret void ; don't think we can get here, but ...
 }
 
-define void @create_thread(%task* %t, i8* %val, i32 %stackSize) naked noreturn
+define %TCB* @create_thread(%task* %t, i8* %val, i32 %stackSize) naked noreturn
+{
+    ; allocate the new thread object
+    %tcb     = call %TCB* @alloc_tcb()
+    %s       = call %Stack @malloc(i32 %stackSize)
+    %top     = getelementptr %Stack %s, i32 %stackSize
+    %topi    = ptrtoint %Stack %top to i64
+    %topm8i  = sub i64 %topi, 8
+    %topm8   = inttoptr i64 %topm8i to %Stack
+    %tcbstt  = getelementptr %TCB* %tcb, i32 0, i32 0
+    %tcbstb  = getelementptr %TCB* %tcb, i32 0, i32 1
+    store i8* %topm8, %Stack* %tcbstt
+    store i8* %s, i8** %tcbstb
+    ; call into our helper (we will end up returning here)
+    call void @create_thread2(%task* %t, i8* %val, %TCB* %tcb)
+    ret %TCB* %tcb
+}
+
+define private void @create_thread2(%task* %t, i8* %val, %TCB* %tcb)
+  noinline naked
 {
     ; get the current thread object
     %cur_t   = load %TCB** @current_thread
@@ -86,17 +108,11 @@ saveCurrent:
 
 createNew:
     ; create the new TCB and set it as the currently-running thread
-    %tcb     = call %TCB* @alloc_tcb()
-    %s       = call %Stack @malloc(i32 %stackSize)
-    %top     = getelementptr %Stack %s, i32 %stackSize
-    %topi    = ptrtoint %Stack %top to i64
-    %topm8i  = sub i64 %topi, 8
-    %topm8   = inttoptr i64 %topm8i to %Stack
-    %tcbstb  = getelementptr %TCB* %tcb, i32 0, i32 1
-    store i8* %s, i8** %tcbstb
     store %TCB* %tcb, %TCB** @current_thread
     ; "restore" the stack and call into the function we want
-    call void @llvm.stackrestore(%Stack %topm8)
+    %tcpstt = getelementptr %TCB* %tcb, i32 0, i32 0
+    %stack  = load %Stack* %tcpstt
+    call void @llvm.stackrestore(%Stack %stack)
     call void @start_thread(%task* %t, i8* %val)
 
     ; shouldn't get here
@@ -107,6 +123,23 @@ define private void @start_thread(%task* %t, i8* %data) naked noreturn
 {
     ; run the body of the thread
     call void %t(i8* %data)
+    ; hey, we're back. cool. find our join list.
+    %cur_t   = load %TCB** @current_thread
+    %jlptr   = getelementptr %TCB* %cur_t, i32 0, i32 2
+    %jlist   = load %Queue** %jlptr
+    %rlist   = load %Queue** @running_queue
+    br label %unwindJoinList
+
+unwindJoinList:
+    %jthread = call %TCB* @dequeueTCB(%Queue* %jlist)
+    %done    = icmp eq %TCB* %jthread, null
+    br i1 %done, label %cleanup, label %moveAndLoop
+
+moveAndLoop:
+    call void @enqueueTCB(%Queue* %rlist, %TCB* %jthread)
+    br label %unwindJoinList
+
+cleanup:
     ; cleanup the current thread
     %cur     = load %TCB** @current_thread
     %curi8   = bitcast %TCB* %cur to i8*
@@ -333,6 +366,26 @@ define private void @addWaiterAndBlock(%Channel* %chan, i8* %val) noinline naked
     %queue = load %Queue** %qptr
     call void @enqueue(%Queue* %queue, i8* %wstrct)
     ; schedule the next action
+    call void @schedule()
+    ret void
+}
+
+define void @thread_join(%TCB* %thread)
+{
+    ; get the current thread object
+    %cur_t  = load %TCB** @current_thread
+    ; get the current stack and bang it into the structure
+    %cur_s  = call %Stack @llvm.stacksave()
+    %stackp = getelementptr %TCB* %cur_t, i32 0, i32 0
+    store %Stack %cur_s, %Stack* %stackp
+    ; there is no current thread!
+    store %TCB* null, %TCB** @current_thread
+    ; get the thread's join list and add the formerly-current thread to it
+    %jlptr  = getelementptr %TCB* %thread, i32 0, i32 2
+    %jlist  = load %Queue** %jlptr
+    %tcbptr = bitcast %TCB* %cur_t to i8*
+    call void @enqueue(%Queue* %jlist, i8* %tcbptr)
+    ; and go to the next person
     call void @schedule()
     ret void
 }
