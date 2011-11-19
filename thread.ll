@@ -370,7 +370,7 @@ define private void @addWaiterAndBlock(%Channel* %chan, i8* %val) noinline naked
     ret void
 }
 
-define void @thread_join(%TCB* %thread)
+define void @thread_join(%TCB* %thread) naked
 {
     ; get the current thread object
     %cur_t  = load %TCB** @current_thread
