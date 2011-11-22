@@ -7,11 +7,11 @@ ASFLAGS     = -g -c
 CC          = gcc
 CFLAGS      = -g -c -fomit-frame-pointer -fomit-frame-pointer -Iinclude/
 LD          = gcc
-LDFLAGS     = -g
+LDFLAGS     = -g -lrt
 GHC         = ghc
 GHCFLAGS    = -package QuickCheck
 
-LLVM_FILES  = queue.ll sorted_list.ll thread.ll
+LLVM_FILES  = queue.ll sorted_list.ll thread.ll time.ll
 LLVM_OBJS   = $(patsubst %.ll,%.o,$(LLVM_FILES))
 
 include mk/build.mk

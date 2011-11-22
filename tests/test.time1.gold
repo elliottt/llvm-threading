@@ -1,0 +1,5 @@
+64 microseconds = 1 ticks (should be 1)
+3 seconds is 46875 ticks (should be 46875)
+10 ticks = 640 microseconds (should be 640)
+3.5 seconds (3, 500000000) = 54687 ticks (should be 54687)
+Reversed, 54687 ticks = (3, 499968000)
