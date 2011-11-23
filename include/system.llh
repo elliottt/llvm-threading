@@ -1,0 +1,16 @@
+#ifndef SYSTEM_LLH
+#define SYSTEM_LLH
+
+%TimeT     = type i64
+%TimeSpec  = type { %TimeT, %TimeT }
+
+declare i8*  @malloc(i32)
+declare void @free(i8*)
+
+declare i64  @clock_gettime(i32, %TimeSpec*)
+declare i32  @clock_nanosleep(i32, i32, %TimeSpec*, %TimeSpec*)
+
+declare i32  @printf(i8* noalias nocapture, ...)
+declare void @exit(i32) noreturn
+
+#endif

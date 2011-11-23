@@ -1,0 +1,10 @@
+#ifndef LLVM_LLH
+#define LLVM_LLH
+
+%Stack      = type i8*
+
+declare void   @llvm.memset.p0i8.i32(i8* nocapture, i8, i32, i32, i1)
+declare %Stack @llvm.stacksave()
+declare void   @llvm.stackrestore(%Stack)
+
+#endif

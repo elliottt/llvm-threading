@@ -10,9 +10,12 @@ LD          = gcc
 LDFLAGS     = -g -lrt
 GHC         = ghc
 GHCFLAGS    = -package QuickCheck
+CPP         = cpp
+CPPFLAGS    = -Iinclude/
 
-LLVM_FILES  = queue.ll sorted_list.ll thread.ll time.ll
-LLVM_OBJS   = $(patsubst %.ll,%.o,$(LLVM_FILES))
+LLVM_FILES  = queue.lla sorted_list.lla thread.lla time.lla
+LLVM_FILESP = $(foreach f,$(LLVM_FILES),src/$(f))
+LLVM_OBJS   = $(patsubst %.lla,%.o,$(LLVM_FILESP))
 
 include mk/build.mk
 
@@ -41,4 +44,9 @@ tests: $(TESTS_ELFS)
 	for test in $(TESTS); do $${test}; done
 
 clean:
-	rm -f *.o *.bc *.s *.elf tests/*.{o,bc,s,elf,hi}
+	rm -f *.o *.bc *.s *.elf tests/*.{o,bc,s,elf,hi} src/*.{o,bc,s,elf,hi,ll}
+
+src/queue.ll: include/queue.llh include/system.llh include/llvm.llh
+src/sorted_list.ll: include/sorted_list.llh include/system.llh include/llvm.llh
+src/time.ll: include/time.llh include/system.llh
+src/thread.ll: include/system.llh include/llvm.llh include/queue.llh

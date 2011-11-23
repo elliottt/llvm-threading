@@ -1,0 +1,133 @@
+;
+; A simple linked-list module that implements a basic queue.
+;
+#include "queue.llh"
+#include "system.llh"
+#include "llvm.llh"
+
+define %Queue* @newQueue()
+{
+    %fkptr  = getelementptr %Queue* null, i32 1
+    %szlist = ptrtoint %Queue* %fkptr to i32
+    %ptr    = call i8* @malloc(i32 %szlist)
+    call void @llvm.memset.p0i8.i32(i8* %ptr, i8 0, i32 %szlist, i32 1, i1 0)
+    %retptr = bitcast i8* %ptr to %Queue*
+    ret %Queue* %retptr
+}
+
+define void @freeQueue(%Queue* %ptr)
+{
+    ; should probably not leak if non-empty, but ...
+    %i8ptr = bitcast %Queue* %ptr to i8*
+    call void @free(i8* %i8ptr)
+    ret void
+}
+
+define void @enqueue(%Queue* %ptr, i8* %val)
+{
+    ; allocate the new node
+    %fkptr   = getelementptr %QueueNode* null, i32 1
+    %size    = ptrtoint %QueueNode* %fkptr to i32
+    %tempPtr = call i8* @malloc(i32 %size)
+    %newNode = bitcast i8* %tempPtr to %QueueNode*
+    ; fill in the fields
+    %nextPtr = getelementptr %QueueNode* %newNode, i32 0, i32 0
+    store %QueueNode* null, %QueueNode** %nextPtr
+    %valPtr  = getelementptr %QueueNode* %newNode, i32 0, i32 1
+    store i8* %val, i8** %valPtr
+    ; check to see if the list is empty
+    %lastPtrP = getelementptr %Queue* %ptr, i32 0, i32 1
+    %lastPtr  = load %QueueNode** %lastPtrP
+    %isEmpty  = icmp eq %QueueNode* %lastPtr, null
+    br i1 %isEmpty, label %empty, label %append
+
+empty:
+    store %QueueNode* %newNode, %QueueNode** %lastPtrP
+    %firstPtrP = getelementptr %Queue* %ptr, i32 0, i32 0
+    store %QueueNode* %newNode, %QueueNode** %firstPtrP
+    ret void
+
+append:
+    %lnNextP = getelementptr %QueueNode* %lastPtr, i32 0, i32 0
+    store %QueueNode* %newNode, %QueueNode** %lnNextP
+    store %QueueNode* %newNode, %QueueNode** %lastPtrP
+    ret void
+}
+
+define i8* @dequeue(%Queue* %ptr)
+{
+    %isNull = icmp eq %Queue* %ptr, null
+    br i1 %isNull, label %badQueue, label %goodQueue
+
+badQueue:
+    ret i8* null
+
+goodQueue:
+    %firstPtrP = getelementptr %Queue* %ptr, i32 0, i32 0
+    %firstPtr  = load %QueueNode** %firstPtrP
+    %isEmpty   = icmp eq %QueueNode* %firstPtr, null
+    br i1 %isEmpty, label %empty, label %remove
+
+empty:
+    ret i8* null
+
+remove:
+    %retvalP   = getelementptr %QueueNode* %firstPtr, i32 0, i32 1
+    %nextPtrP  = getelementptr %QueueNode* %firstPtr, i32 0, i32 0
+    %retval    = load i8** %retvalP
+    %nextPtr   = load %QueueNode** %nextPtrP
+    %nodei8    = bitcast %QueueNode* %firstPtr to i8*
+    %isOnly    = icmp eq %QueueNode* %nextPtr, null
+    ;call void @free(i8* %nodei8)
+    br i1 %isOnly, label %singleItem, label %multItems
+
+singleItem:
+    %lastPtrP  = getelementptr %Queue* %ptr, i32 0, i32 1
+    store %QueueNode* null, %QueueNode** %firstPtrP
+    store %QueueNode* null, %QueueNode** %lastPtrP
+    br label %done
+
+multItems:
+    store %QueueNode* %nextPtr, %QueueNode** %firstPtrP
+    %nextnextP = getelementptr %QueueNode* %nextPtr, i32 0, i32 0
+    %nextnext  = load %QueueNode** %nextnextP
+    %isLast    = icmp eq %QueueNode* %nextnext, null
+    br i1 %isLast, label %updateLast, label %done
+
+updateLast:
+    %lastPtrP2  = getelementptr %Queue* %ptr, i32 0, i32 1
+    store %QueueNode* %nextPtr, %QueueNode** %lastPtrP2
+    br label %done
+
+done:
+    ret i8* %retval
+}
+
+define i64 @queueLength(%Queue* %ptr)
+{
+    %isBad = icmp eq %Queue* %ptr, null
+    br i1 %isBad, label %badQueue, label %loopHeader
+
+badQueue:
+    ret i64 0
+
+loopHeader:
+    %firstPtrP = getelementptr %Queue* %ptr, i32 0, i32 0
+    %firstPtr  = load %QueueNode** %firstPtrP
+    br label %loop
+
+loop:
+    %curval    = phi i64 [0, %loopHeader], [%nextval, %advance]
+    %curnode   = phi %QueueNode* [%firstPtr, %loopHeader], [%nextnode, %advance]
+    %isNull    = icmp eq %QueueNode* %curnode, null
+    br i1 %isNull, label %done, label %advance
+
+advance:
+    %nextval   = add i64 %curval, 1
+    %nextnodeP = getelementptr %QueueNode* %curnode, i32 0, i32 0
+    %nextnode  = load %QueueNode** %nextnodeP
+    br label %loop
+
+done:
+    ret i64 %curval
+}

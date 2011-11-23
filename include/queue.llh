@@ -1,0 +1,13 @@
+#ifndef QUEUE_LLH
+#define QUEUE_LLH
+
+%QueueNode = type { %QueueNode*, i8* }
+%Queue     = type { %QueueNode*, %QueueNode* }
+
+declare %Queue* @newQueue()
+declare void    @freeQueue(%Queue* %ptr)
+declare void    @enqueue(%Queue* %ptr, i8* %val)
+declare i8*     @dequeue(%Queue* %ptr)
+declare i64     @queueLength(%Queue* %ptr)
+
+#endif

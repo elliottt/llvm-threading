@@ -1,0 +1,15 @@
+#ifndef SORTED_LIST_LLH
+#define SORTED_LIST_LLH
+
+%Comparator     = type i8(i8*, i8*)
+%SortListNode   = type { %SortListNode*, i8* }
+%SortList       = type { %SortListNode*, %Comparator* }
+
+declare %SortList* @newSortedList(%Comparator* %comp)
+declare %SortList* @newSortedListLT()
+declare void       @freeSortList(%SortList* %list)
+declare void       @addSortListItem(%SortList* %list, i8* %item)
+declare i8*        @getSortListItem(%SortList* %list)
+declare i64        @getSortListLength(%SortList* %list)
+
+#endif

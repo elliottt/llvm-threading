@@ -1,0 +1,14 @@
+#ifndef TIME_LLH
+#define TIME_LLH
+
+%Ticks     = type i64
+
+declare %Ticks @microsecondsToTicks(i64 %microseconds)
+declare i64    @ticksToMicroseconds(%Ticks %ticks)
+declare %Ticks @secondsToTicks(i64 %seconds)
+declare %Ticks @timespecToTicks(%TimeSpec* %tval)
+declare void   @ticksToTimespec(%Ticks %ticks, %TimeSpec* %tval)
+declare %Ticks @getTicks()
+declare void   @sleepFor(%Ticks %ticks)
+
+#endif

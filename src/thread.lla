@@ -1,9 +1,7 @@
-declare i8* @malloc(i32)
-declare void @free(i8*)
-declare void @llvm.memset.p0i8.i32(i8*, i8, i32, i32, i1)
+#include "system.llh"
+#include "llvm.llh"
+#include "queue.llh"
 
-%Stack      = type i8*
-%Queue      = type opaque
 %TCB        = type { %Stack, i8*, %Queue* }
 %ChanWaiter = type { %TCB*, i8* }
 %Channel    = type {
@@ -12,11 +10,6 @@ declare void @llvm.memset.p0i8.i32(i8*, i8, i32, i32, i1)
             ; Queue of %TCBs/pointers in reader waiting state
             ; Queue of %TCBs in writer waiting state
   }
-
-declare %Queue* @newQueue()
-declare void @enqueue(%Queue*, i8*)
-declare i8* @dequeue(%Queue*)
-declare i64 @queueLength(%Queue* %ptr)
 
 define private void @enqueueTCB(%Queue* %queue, %TCB* %tcb)
 {
@@ -31,10 +24,6 @@ define private %TCB* @dequeueTCB(%Queue* %queue)
     %res   = bitcast i8* %tcbi8 to %TCB*
     ret %TCB* %res
 }
-
-declare %Stack @llvm.stacksave()
-declare void @llvm.stackrestore(%Stack)
-
 
 define %TCB* @alloc_tcb() {
     ; allocate and zero out the structure
@@ -65,7 +54,7 @@ define void @run_threaded_system(%task* %t, i8* %val, i32 %stackSize) naked
     store %Queue* %queue, %Queue** @running_queue
     store %Stack %cur_s, %Stack* @original_stack
     call %TCB* @create_thread(%task* %t, i8* %val, i32 %stackSize)
-    ret void ; don't think we can get here, but ...
+    ret void ; dont think we can get here, but ...
 }
 
 define %TCB* @create_thread(%task* %t, i8* %val, i32 %stackSize) naked noreturn
@@ -115,7 +104,7 @@ createNew:
     call void @llvm.stackrestore(%Stack %stack)
     call void @start_thread(%task* %t, i8* %val)
 
-    ; shouldn't get here
+    ; shouldnt get here
     unreachable
 }
 
@@ -123,7 +112,7 @@ define private void @start_thread(%task* %t, i8* %data) naked noreturn
 {
     ; run the body of the thread
     call void %t(i8* %data)
-    ; hey, we're back. cool. find our join list.
+    ; hey, we are back. cool. find our join list.
     %cur_t   = load %TCB** @current_thread
     %jlptr   = getelementptr %TCB* %cur_t, i32 0, i32 2
     %jlist   = load %Queue** %jlptr
@@ -151,9 +140,6 @@ cleanup:
     call void @schedule()
     unreachable
 }
-
-;declare i32 @printf(i8* noalias nocapture, ...)
-;@str = internal constant [21 x i8] c"Current thread = %p\0A\00"
 
 define void @yield() naked
 {
@@ -239,7 +225,7 @@ no_one_around:
     ret i32 0
 
 reader_waiting:
-    ; grab the channel's wait queue
+    ; grab the channel wait queue
     %qptr  = getelementptr %Channel* %chan, i32 0, i32 1
     %queue = load %Queue** %qptr
     ; grab the first waiter from the queue
@@ -306,7 +292,7 @@ reader_waiting:
     ret i32 0
 
 writer_waiting:
-    ; grab the channel's wait queue
+    ; grab the channel wait queue
     %qptr  = getelementptr %Channel* %chan, i32 0, i32 1
     %queue = load %Queue** %qptr
     ; grab the first waiter from the queue
@@ -380,7 +366,7 @@ define void @thread_join(%TCB* %thread) naked
     store %Stack %cur_s, %Stack* %stackp
     ; there is no current thread!
     store %TCB* null, %TCB** @current_thread
-    ; get the thread's join list and add the formerly-current thread to it
+    ; get the thread join list and add the formerly-current thread to it
     %jlptr  = getelementptr %TCB* %thread, i32 0, i32 2
     %jlist  = load %Queue** %jlptr
     %tcbptr = bitcast %TCB* %cur_t to i8*

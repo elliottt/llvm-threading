@@ -117,14 +117,14 @@ freeList q = do
 foreign import ccall unsafe "slist.h newSortedListLT"
   newSortedList :: IO (Ptr Word8)
 
-foreign import ccall unsafe "slist.h addItem"
+foreign import ccall unsafe "slist.h addSortListItem"
   addItem :: Ptr Word8 -> Ptr Word8 -> IO ()
 
-foreign import ccall unsafe "slist.h getItem"
+foreign import ccall unsafe "slist.h getSortListItem"
   getItem :: Ptr Word8 -> IO (Ptr Word8)
 
-foreign import ccall unsafe "slist.h getLength"
+foreign import ccall unsafe "slist.h getSortListLength"
   getLength :: Ptr Word8 -> IO Word64
 
-foreign import ccall unsafe "slist.h freeList"
+foreign import ccall unsafe "slist.h freeSortList"
   freeList' :: Ptr Word8 -> IO ()

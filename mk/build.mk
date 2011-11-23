@@ -10,6 +10,12 @@ endif
 echo-cmd = $(if $($(quiet)cmd_$(1)), echo "  $($(quiet)cmd_$(1))";)
 cmd      = @$(echo-cmd) $(cmd_$(1))
 
+# lla -> ll
+cmd_lla_to_ll       = $(CPP) -P $(CPPFLAGS) $< > $@
+quiet_cmd_lla_to_ll = CPP     $(notdir $@)
+%.ll: %.lla
+	$(call cmd,lla_to_ll)
+
 # ll -> bc
 cmd_ll_to_bc        = $(LLVM_AS) $(LLASFLAGS) -o $@ $<
 quiet_cmd_ll_to_bc  = LLVM_AS $(notdir $@)

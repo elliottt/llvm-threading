@@ -4,3 +4,4 @@
 *.elf
 *.hi
 test
+src/*.ll
