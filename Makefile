@@ -50,3 +50,5 @@ src/queue.ll: include/queue.llh include/system.llh include/llvm.llh
 src/sorted_list.ll: include/sorted_list.llh include/system.llh include/llvm.llh
 src/time.ll: include/time.llh include/system.llh
 src/thread.ll: include/system.llh include/llvm.llh include/queue.llh
+src/thread.ll: include/sorted_list.llh include/time.llh
+src/thread.ll: include/thread.h

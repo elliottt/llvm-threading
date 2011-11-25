@@ -1,50 +1,31 @@
 #include "system.llh"
 #include "llvm.llh"
 #include "queue.llh"
+#include "sorted_list.llh"
+#include "time.llh"
 
-%TCB        = type { %Stack, i8*, %Queue* }
-%ChanWaiter = type { %TCB*, i8* }
-%Channel    = type {
+%TCB         = type { %Stack, i8*, %Queue* }
+%ChanWaiter  = type { %TCB*, i8* }
+%SleepWiater = type { %Ticks, %TCB* }
+%Channel     = type {
     i8      ; State: 0 open, 1 reader waiting, 2 writer waiting
   , %Queue* ; Invalid in open state
             ; Queue of %TCBs/pointers in reader waiting state
             ; Queue of %TCBs in writer waiting state
   }
 
-define private void @enqueueTCB(%Queue* %queue, %TCB* %tcb)
-{
-    %tcbi8 = bitcast %TCB* %tcb to i8*
-    call void @enqueue(%Queue* %queue, i8* %tcbi8)
-    ret void
-}
-
-define private %TCB* @dequeueTCB(%Queue* %queue)
-{
-    %tcbi8 = call i8* @dequeue(%Queue* %queue)
-    %res   = bitcast i8* %tcbi8 to %TCB*
-    ret %TCB* %res
-}
-
-define %TCB* @alloc_tcb() {
-    ; allocate and zero out the structure
-    %ptr_tcb = getelementptr %TCB* null, i32 1
-    %sz_tcb  = ptrtoint %TCB* %ptr_tcb to i32
-    %ptr     = call i8* @malloc(i32 %sz_tcb)
-    call void @llvm.memset.p0i8.i32(i8* %ptr, i8 0, i32 %sz_tcb, i32 1, i1 0)
-    ; initialize the join list
-    %tcb     = bitcast i8* %ptr to %TCB*
-    %jlist   = call %Queue* @newQueue()
-    %jlptr   = getelementptr %TCB* %tcb, i32 0, i32 2
-    store %Queue* %jlist, %Queue** %jlptr
-    ; return the new TCB
-    ret %TCB* %tcb
-}
-
 %task = type void(i8*)
 
-@running_queue  = global %Queue* null
-@current_thread = global %TCB* null
-@original_stack = global %Stack null
+@running_queue  = global %Queue*    null
+@sleep_queue    = global %SortList* null
+@current_thread = global %TCB*      null
+@original_stack = global %Stack     null
+
+; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+; System Initialization
+;
+; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 ; create the main running task, and global queues
 define void @run_threaded_system(%task* %t, i8* %val, i32 %stackSize) naked
@@ -57,6 +38,23 @@ define void @run_threaded_system(%task* %t, i8* %val, i32 %stackSize) naked
     ret void ; dont think we can get here, but ...
 }
 
+; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+; External Functions
+;
+; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+; create_thread
+;   INPUTS:
+;             %t: The task (function) to start
+;           %val: The value to pass to the function
+;     %stackSize: The size of the stack to create for the thread (in bytes)
+;
+;   OUTPUTS:
+;                 An object representing the newly-created thread.
+;   SIDE EFFECTS:
+;                 Creates a new thread and begins running it; in other words,
+;                 the current thread will yield immediately to the new thread.
 define %TCB* @create_thread(%task* %t, i8* %val, i32 %stackSize) naked noreturn
 {
     ; allocate the new thread object
@@ -72,6 +70,289 @@ define %TCB* @create_thread(%task* %t, i8* %val, i32 %stackSize) naked noreturn
     store i8* %s, i8** %tcbstb
     ; call into our helper (we will end up returning here)
     call void @create_thread2(%task* %t, i8* %val, %TCB* %tcb)
+    ret %TCB* %tcb
+}
+
+; yield
+;    INPUTS: none
+;    OUTPUTS: none
+;    SIDE EFFECTS:
+;      Yields execution to the next thread in the run queue. If there are
+;      no other threads available to run, will restart the current thread.
+define void @yield() naked
+{
+    ; get the current thread object
+    %cur_t   = load %TCB** @current_thread
+    ; get the current stack and bang it into the structure
+    %cur_s   = call %Stack @llvm.stacksave()
+    %stackPP = getelementptr %TCB* %cur_t, i32 0, i32 0
+    store %Stack %cur_s, %Stack* %stackPP
+    ; add the current thread object to the running queue
+    %queue   = load %Queue** @running_queue
+    call void @enqueueTCB(%Queue* %queue, %TCB* %cur_t)
+    ; there is no currently running thread!
+    store %TCB* null, %TCB** @current_thread
+    call void @schedule()
+    ret void
+}
+
+; create_channel
+;    INPUTS: none
+;    OUTPUTS:
+;       A new synchronous channel.
+;    SIDE EFFECTS:
+;       Allocates.
+define %Channel* @create_channel()
+{
+    ; allocate and initialize the memory to zero
+    %ptrChan = getelementptr %Channel* null, i32 1
+    %szChan  = ptrtoint %Channel* %ptrChan to i32
+    %ptr     = call i8* @malloc(i32 %szChan)
+    call void @llvm.memset.p0i8.i32(i8* %ptr, i8 0, i32 %szChan, i32 1, i1 0)
+    ; allocate the thread queue and set the pointer
+    %retval  = bitcast i8* %ptr to %Channel*
+    %qptr    = getelementptr %Channel* %retval, i32 0, i32 1
+    %queue   = call %Queue* @newQueue()
+    store %Queue* %queue, %Queue** %qptr
+    ; return the appropriately-casted value
+    ret %Channel* %retval
+}
+
+; send_channel
+;    INPUTS:
+;       %chan: The channel to send on
+;        %val: The value to send on the channel.
+;    OUTPUTS:
+;       An error code:
+;         0 = No error
+;        -1 = Passed an invalid channel, or channel in an unknown state
+;        -2 = Passed a corrupted channel (internal queue damage)
+;    SIDE EFFECTS:
+;       Blocks until another thread holding the channel performs a
+;       recv_channel, and then transfers the data from the sending
+;       thread to the receiving thread. If there is already a receiver
+;       blocked waiting for a send, the transfer will happen immediately
+;       and the sending thread will not block.
+;
+;       Channel sends and receives use a fair algorithm.
+;
+define i32 @send_channel(%Channel* %chan, i8* %val)
+{
+    %ptrst = getelementptr %Channel* %chan, i32 0, i32 0
+    %state = load i8* %ptrst
+    switch i8 %state, label %bad_chan [ i8 0, label %no_one_around
+                                        i8 1, label %reader_waiting
+                                        i8 2, label %writer_waiting ]
+
+no_one_around:
+    store i8 2, i8* %ptrst ; update the state
+    call void @addWaiterAndBlock(%Channel* %chan, i8* %val)
+    ret i32 0
+
+reader_waiting:
+    ; grab the channel wait queue
+    %qptr  = getelementptr %Channel* %chan, i32 0, i32 1
+    %queue = load %Queue** %qptr
+    ; grab the first waiter from the queue
+    %first = call i8* @dequeue(%Queue* %queue)
+    %isBad = icmp eq i8* %first, null
+    br i1 %isBad, label %bad_queue, label %good_queue
+
+good_queue:
+    ; OK, %first is non-null. Pull the value and the thread.
+    %frstw  = bitcast i8* %first to %ChanWaiter*
+    %frsttp = getelementptr %ChanWaiter* %frstw, i32 0, i32 0
+    %frstvp = getelementptr %ChanWaiter* %frstw, i32 0, i32 1
+    %thread = load %TCB** %frsttp
+    %vali8  = load i8** %frstvp
+    %valp   = bitcast i8* %vali8 to i8**
+    ; Free the waiter structure
+    call void @free(i8* %first)
+    ; Add the blocked thread back to the wait queue
+    %tqueue = load %Queue** @running_queue
+    call void @enqueueTCB(%Queue* %tqueue, %TCB* %thread)
+    ; Write the value to the out value and return
+    store i8* %val, i8** %valp
+    ; Is this the last reader waiting for us?
+    %count  = call i64 @queueLength(%Queue* %queue)
+    %empty  = icmp eq i64 %count, 0
+    br i1 %empty, label %nowEmpty, label %allDone
+
+nowEmpty:
+    ; The queue went from reader waiting to empty, so update the state
+    store i8 0, i8* %ptrst
+    ret i32 0
+
+allDone:
+    ret i32 0
+
+bad_queue:
+    ret i32 -2
+
+writer_waiting:
+    call void @addWaiterAndBlock(%Channel* %chan, i8* %val)
+    ret i32 0
+
+bad_chan:
+    ret i32 -1
+}
+
+; recv_channel
+;   INPUTS:
+;     %chan: The channel to receive data on.
+;     %valp: A pointer to a location to store the data.
+;   OUTPUTS:
+;     An error code:
+;         0 = No error
+;        -1 = Passed an invalid channel, or channel in an unknown state
+;        -2 = Passed a corrupted channel (internal queue damage)
+;   SIDE EFFECTS:
+;     Blocks the current thread until another thread holding the channel
+;     performs a channel send. At that point, the sent data will be written
+;     to the location denoted by %valp. Alternatively, if there is a sender
+;     blocked waiting for a receive, the value will be transferred immediately
+;     and the receiving thread will not block.
+;
+;     Channel sends and receives use a fair algorithm.
+;
+define i32 @recv_channel(%Channel* %chan, i8** %valp)
+{
+    %ptrst = getelementptr %Channel* %chan, i32 0, i32 0
+    %state = load i8* %ptrst
+    switch i8 %state, label %bad_chan [ i8 0, label %no_one_around
+                                        i8 1, label %reader_waiting
+                                        i8 2, label %writer_waiting ]
+
+no_one_around:
+    store i8 1, i8* %ptrst ; update the state
+    %valp2 = bitcast i8** %valp to i8*
+    call void @addWaiterAndBlock(%Channel* %chan, i8* %valp2)
+    ret i32 0
+
+reader_waiting:
+    %valp3 = bitcast i8** %valp to i8*
+    call void @addWaiterAndBlock(%Channel* %chan, i8* %valp3)
+    ret i32 0
+
+writer_waiting:
+    ; grab the channel wait queue
+    %qptr  = getelementptr %Channel* %chan, i32 0, i32 1
+    %queue = load %Queue** %qptr
+    ; grab the first waiter from the queue
+    %first = call i8* @dequeue(%Queue* %queue)
+    %isBad = icmp eq i8* %first, null
+    br i1 %isBad, label %bad_queue, label %good_queue
+
+good_queue:
+    ; OK, %first is non-null. Pull the value and the thread.
+    %frstw  = bitcast i8* %first to %ChanWaiter*
+    %frsttp = getelementptr %ChanWaiter* %frstw, i32 0, i32 0
+    %frstvp = getelementptr %ChanWaiter* %frstw, i32 0, i32 1
+    %thread = load %TCB** %frsttp
+    %val    = load i8** %frstvp
+    ; Free the waiter structure
+    call void @free(i8* %first)
+    ; Add the blocked thread back to the wait queue
+    %tqueue = load %Queue** @running_queue
+    call void @enqueueTCB(%Queue* %tqueue, %TCB* %thread)
+    ; Write the value to the out value and return
+    store i8* %val, i8** %valp
+    ; Is this the last writer waiting for us?
+    %count  = call i64 @queueLength(%Queue* %queue)
+    %empty  = icmp eq i64 %count, 0
+    br i1 %empty, label %nowEmpty, label %allDone
+
+nowEmpty:
+    ; The queue went from writer waiting to empty, so update the state
+    store i8 0, i8* %ptrst
+    ret i32 0
+
+allDone:
+    ret i32 0
+
+bad_queue:
+    ret i32 -2
+
+bad_chan:
+    ret i32 -1
+}
+
+; thread_join
+;   INPUTS
+;     %thread: The thread to join.
+;   OUTPUTS
+;     None.
+;   SIDE EFFECTS
+;     Blocks the execution of the current thread until the passed thread
+;     completes.
+define void @thread_join(%TCB* %thread) naked
+{
+    ; get the current thread object
+    %cur_t  = load %TCB** @current_thread
+    ; get the current stack and bang it into the structure
+    %cur_s  = call %Stack @llvm.stacksave()
+    %stackp = getelementptr %TCB* %cur_t, i32 0, i32 0
+    store %Stack %cur_s, %Stack* %stackp
+    ; there is no current thread!
+    store %TCB* null, %TCB** @current_thread
+    ; get the thread join list and add the formerly-current thread to it
+    %jlptr  = getelementptr %TCB* %thread, i32 0, i32 2
+    %jlist  = load %Queue** %jlptr
+    %tcbptr = bitcast %TCB* %cur_t to i8*
+    call void @enqueue(%Queue* %jlist, i8* %tcbptr)
+    ; and go to the next person
+    call void @schedule()
+    ret void
+}
+
+; sleep
+;   INPUTS:
+;     %microseconds: The number of microseconds to sleep for.
+;   OUTPUTS:
+;     None.
+;   SIDE EFFECTS:
+;     Blocks the current thread for at least the given number of microseconds.
+;     Note that the threading system is not guaranteed to be microsecond-
+;     accurate nor real time, so it is likely that the delay will be slightly
+;     longer than requested.
+define void @sleep(i64 %microseconds) naked
+{
+    ret void
+}
+
+; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+; Simple Helper Functions
+;
+; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+
+define private void @enqueueTCB(%Queue* %queue, %TCB* %tcb)
+{
+    %tcbi8 = bitcast %TCB* %tcb to i8*
+    call void @enqueue(%Queue* %queue, i8* %tcbi8)
+    ret void
+}
+
+define private %TCB* @dequeueTCB(%Queue* %queue)
+{
+    %tcbi8 = call i8* @dequeue(%Queue* %queue)
+    %res   = bitcast i8* %tcbi8 to %TCB*
+    ret %TCB* %res
+}
+
+define private %TCB* @alloc_tcb() {
+    ; allocate and zero out the structure
+    %ptr_tcb = getelementptr %TCB* null, i32 1
+    %sz_tcb  = ptrtoint %TCB* %ptr_tcb to i32
+    %ptr     = call i8* @malloc(i32 %sz_tcb)
+    call void @llvm.memset.p0i8.i32(i8* %ptr, i8 0, i32 %sz_tcb, i32 1, i1 0)
+    ; initialize the join list
+    %tcb     = bitcast i8* %ptr to %TCB*
+    %jlist   = call %Queue* @newQueue()
+    %jlptr   = getelementptr %TCB* %tcb, i32 0, i32 2
+    store %Queue* %jlist, %Queue** %jlptr
+    ; return the new TCB
     ret %TCB* %tcb
 }
 
@@ -141,23 +422,6 @@ cleanup:
     unreachable
 }
 
-define void @yield() naked
-{
-    ; get the current thread object
-    %cur_t   = load %TCB** @current_thread
-    ; get the current stack and bang it into the structure
-    %cur_s   = call %Stack @llvm.stacksave()
-    %stackPP = getelementptr %TCB* %cur_t, i32 0, i32 0
-    store %Stack %cur_s, %Stack* %stackPP
-    ; add the current thread object to the running queue
-    %queue   = load %Queue** @running_queue
-    call void @enqueueTCB(%Queue* %queue, %TCB* %cur_t)
-    ; there is no currently running thread!
-    store %TCB* null, %TCB** @current_thread
-    call void @schedule()
-    ret void
-}
-
 define private void @schedule() naked
 {
     ; yank the next thread off the queue
@@ -182,22 +446,6 @@ goodQueue:
     ret void
 }
 
-define %Channel* @create_channel()
-{
-    ; allocate and initialize the memory to zero
-    %ptrChan = getelementptr %Channel* null, i32 1
-    %szChan  = ptrtoint %Channel* %ptrChan to i32
-    %ptr     = call i8* @malloc(i32 %szChan)
-    call void @llvm.memset.p0i8.i32(i8* %ptr, i8 0, i32 %szChan, i32 1, i1 0)
-    ; allocate the thread queue and set the pointer
-    %retval  = bitcast i8* %ptr to %Channel*
-    %qptr    = getelementptr %Channel* %retval, i32 0, i32 1
-    %queue   = call %Queue* @newQueue()
-    store %Queue* %queue, %Queue** %qptr
-    ; return the appropriately-casted value
-    ret %Channel* %retval
-}
-
 define private i8* @buildWaitStruct(%TCB* %cur_t, i8* %val)
 {
     %ptr0    = getelementptr %ChanWaiter* null, i32 1
@@ -209,129 +457,6 @@ define private i8* @buildWaitStruct(%TCB* %cur_t, i8* %val)
     store %TCB* %cur_t, %TCB** %ptrTCB0
     store i8* %val, i8** %ptrVal0
     ret i8* %ptr1
-}
-
-define i32 @send_channel(%Channel* %chan, i8* %val)
-{
-    %ptrst = getelementptr %Channel* %chan, i32 0, i32 0
-    %state = load i8* %ptrst
-    switch i8 %state, label %bad_chan [ i8 0, label %no_one_around
-                                        i8 1, label %reader_waiting
-                                        i8 2, label %writer_waiting ]
-
-no_one_around:
-    store i8 2, i8* %ptrst ; update the state
-    call void @addWaiterAndBlock(%Channel* %chan, i8* %val)
-    ret i32 0
-
-reader_waiting:
-    ; grab the channel wait queue
-    %qptr  = getelementptr %Channel* %chan, i32 0, i32 1
-    %queue = load %Queue** %qptr
-    ; grab the first waiter from the queue
-    %first = call i8* @dequeue(%Queue* %queue)
-    %isBad = icmp eq i8* %first, null
-    br i1 %isBad, label %bad_queue, label %good_queue
-
-good_queue:
-    ; OK, %first is non-null. Pull the value and the thread.
-    %frstw  = bitcast i8* %first to %ChanWaiter*
-    %frsttp = getelementptr %ChanWaiter* %frstw, i32 0, i32 0
-    %frstvp = getelementptr %ChanWaiter* %frstw, i32 0, i32 1
-    %thread = load %TCB** %frsttp
-    %vali8  = load i8** %frstvp
-    %valp   = bitcast i8* %vali8 to i8**
-    ; Free the waiter structure
-    call void @free(i8* %first)
-    ; Add the blocked thread back to the wait queue
-    %tqueue = load %Queue** @running_queue
-    call void @enqueueTCB(%Queue* %tqueue, %TCB* %thread)
-    ; Write the value to the out value and return
-    store i8* %val, i8** %valp
-    ; Is this the last reader waiting for us?
-    %count  = call i64 @queueLength(%Queue* %queue)
-    %empty  = icmp eq i64 %count, 0
-    br i1 %empty, label %nowEmpty, label %allDone
-
-nowEmpty:
-    ; The queue went from reader waiting to empty, so update the state
-    store i8 0, i8* %ptrst
-    ret i32 0
-
-allDone:
-    ret i32 0
-
-bad_queue:
-    ret i32 -2
-
-writer_waiting:
-    call void @addWaiterAndBlock(%Channel* %chan, i8* %val)
-    ret i32 0
-
-bad_chan:
-    ret i32 -1
-}
-
-define i32 @recv_channel(%Channel* %chan, i8** %valp)
-{
-    %ptrst = getelementptr %Channel* %chan, i32 0, i32 0
-    %state = load i8* %ptrst
-    switch i8 %state, label %bad_chan [ i8 0, label %no_one_around
-                                        i8 1, label %reader_waiting
-                                        i8 2, label %writer_waiting ]
-
-no_one_around:
-    store i8 1, i8* %ptrst ; update the state
-    %valp2 = bitcast i8** %valp to i8*
-    call void @addWaiterAndBlock(%Channel* %chan, i8* %valp2)
-    ret i32 0
-
-reader_waiting:
-    %valp3 = bitcast i8** %valp to i8*
-    call void @addWaiterAndBlock(%Channel* %chan, i8* %valp3)
-    ret i32 0
-
-writer_waiting:
-    ; grab the channel wait queue
-    %qptr  = getelementptr %Channel* %chan, i32 0, i32 1
-    %queue = load %Queue** %qptr
-    ; grab the first waiter from the queue
-    %first = call i8* @dequeue(%Queue* %queue)
-    %isBad = icmp eq i8* %first, null
-    br i1 %isBad, label %bad_queue, label %good_queue
-
-good_queue:
-    ; OK, %first is non-null. Pull the value and the thread.
-    %frstw  = bitcast i8* %first to %ChanWaiter*
-    %frsttp = getelementptr %ChanWaiter* %frstw, i32 0, i32 0
-    %frstvp = getelementptr %ChanWaiter* %frstw, i32 0, i32 1
-    %thread = load %TCB** %frsttp
-    %val    = load i8** %frstvp
-    ; Free the waiter structure
-    call void @free(i8* %first)
-    ; Add the blocked thread back to the wait queue
-    %tqueue = load %Queue** @running_queue
-    call void @enqueueTCB(%Queue* %tqueue, %TCB* %thread)
-    ; Write the value to the out value and return
-    store i8* %val, i8** %valp
-    ; Is this the last writer waiting for us?
-    %count  = call i64 @queueLength(%Queue* %queue)
-    %empty  = icmp eq i64 %count, 0
-    br i1 %empty, label %nowEmpty, label %allDone
-
-nowEmpty:
-    ; The queue went from writer waiting to empty, so update the state
-    store i8 0, i8* %ptrst
-    ret i32 0
-
-allDone:
-    ret i32 0
-
-bad_queue:
-    ret i32 -2
-
-bad_chan:
-    ret i32 -1
 }
 
 ; this needs to be no-inline, so that when we return to the current thread
@@ -356,22 +481,4 @@ define private void @addWaiterAndBlock(%Channel* %chan, i8* %val) noinline naked
     ret void
 }
 
-define void @thread_join(%TCB* %thread) naked
-{
-    ; get the current thread object
-    %cur_t  = load %TCB** @current_thread
-    ; get the current stack and bang it into the structure
-    %cur_s  = call %Stack @llvm.stacksave()
-    %stackp = getelementptr %TCB* %cur_t, i32 0, i32 0
-    store %Stack %cur_s, %Stack* %stackp
-    ; there is no current thread!
-    store %TCB* null, %TCB** @current_thread
-    ; get the thread join list and add the formerly-current thread to it
-    %jlptr  = getelementptr %TCB* %thread, i32 0, i32 2
-    %jlist  = load %Queue** %jlptr
-    %tcbptr = bitcast %TCB* %cur_t to i8*
-    call void @enqueue(%Queue* %jlist, i8* %tcbptr)
-    ; and go to the next person
-    call void @schedule()
-    ret void
-}
+

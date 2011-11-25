@@ -5,6 +5,8 @@
 extern "C" {
 #endif
 
+#include <stdint.h>
+
 typedef void(*task)(void *);
 typedef int stack_size;
 
@@ -16,6 +18,7 @@ extern void run_threaded_system(task, void*, stack_size);
 
 extern thread *create_thread(task, void*, stack_size);
 extern void yield();
+extern void sleep(uint64_t microseconds);
 extern void thread_join(thread *);
 
 extern channel *create_channel();
