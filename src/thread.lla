@@ -6,20 +6,20 @@
 
 %TCB         = type { %Stack, i8*, %Queue* }
 %ChanWaiter  = type { %TCB*, i8* }
-%SleepWiater = type { %Ticks, %TCB* }
+%SleepWaiter = type { %Ticks, %TCB* }
 %Channel     = type {
-    i8      ; State: 0 open, 1 reader waiting, 2 writer waiting
-  , %Queue* ; Invalid in open state
-            ; Queue of %TCBs/pointers in reader waiting state
-            ; Queue of %TCBs in writer waiting state
+    i8      ; --> State: 0 open, 1 reader waiting, 2 writer waiting
+  , %Queue* ; --> Invalid in open state
+            ;   | Queue of %TCBs/pointers in reader waiting state
+            ;   | Queue of %TCBs in writer waiting state
   }
 
 %task = type void(i8*)
 
-@running_queue  = global %Queue*    null
-@sleep_queue    = global %SortList* null
-@current_thread = global %TCB*      null
-@original_stack = global %Stack     null
+@running_queue  = internal global %Queue*    null
+@sleeping_queue = internal global %SortList* null
+@current_thread = internal global %TCB*      null
+@original_stack = internal global %Stack     null
 
 ; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;
@@ -30,9 +30,11 @@
 ; create the main running task, and global queues
 define void @run_threaded_system(%task* %t, i8* %val, i32 %stackSize) naked
 {
-    %cur_s = call %Stack @llvm.stacksave()
-    %queue = call %Queue* @newQueue()
+    %cur_s  = call %Stack @llvm.stacksave()
+    %queue  = call %Queue* @newQueue()
+    %squeue = call %SortList* @newSortedList(%Comparator* @compareSleepers)
     store %Queue* %queue, %Queue** @running_queue
+    store %SortList* %squeue, %SortList** @sleeping_queue
     store %Stack %cur_s, %Stack* @original_stack
     call %TCB* @create_thread(%task* %t, i8* %val, i32 %stackSize)
     ret void ; dont think we can get here, but ...
@@ -317,6 +319,32 @@ define void @thread_join(%TCB* %thread) naked
 ;     longer than requested.
 define void @sleep(i64 %microseconds) naked
 {
+    ; compute the size of a sleeper and allocate it
+    %ptrsl  = getelementptr %SleepWaiter* null, i32 1
+    %szsl   = ptrtoint %SleepWaiter* %ptrsl to i32
+    %ptr    = call i8* @malloc(i32 %szsl)
+    %ptrs   = bitcast i8* %ptr to %SleepWaiter*
+    ; find the time to wake up and store it in the structure
+    %sticks = call %Ticks @microsecondsToTicks(i64 %microseconds)
+    %now    = call %Ticks @getTicks()
+    %wakeAt = add %Ticks %sticks, %now
+    %watptr = getelementptr %SleepWaiter* %ptrs, i32 0, i32 0
+    store %Ticks %wakeAt, %Ticks* %watptr
+    ; grab the current thread object and update its stack
+    %cur_t  = load %TCB** @current_thread
+    %cur_s  = call %Stack @llvm.stacksave()
+    %stackP = getelementptr %TCB* %cur_t, i32 0, i32 0
+    store %Stack %cur_s, %Stack* %stackP
+    ; save the current thread object into the sleeper, and null out
+    ; the current thread pointer.
+    %sltptr = getelementptr %SleepWaiter* %ptrs, i32 0, i32 1
+    store %TCB* %cur_t, %TCB** %sltptr
+    store %TCB* null, %TCB** @current_thread
+    ; add ourselves to the sleeping queue
+    %sleeps = load %SortList** @sleeping_queue
+    call void @addSortListItem(%SortList* %sleeps, i8* %ptr)
+    ; and reschedule
+    call void @schedule()
     ret void
 }
 
@@ -424,25 +452,86 @@ cleanup:
 
 define private void @schedule() naked
 {
+    %queue   = load %Queue** @running_queue
+    br label %start
+
+start:
+    call void @wakeReadySleepers()
     ; yank the next thread off the queue
-    %queue  = load %Queue** @running_queue
-    %next   = call %TCB* @dequeueTCB(%Queue* %queue)
-    ; set it as the next thread
-    store %TCB* %next, %TCB** @current_thread
-    %nothr  = icmp eq %TCB* %next, null
-    br i1 %nothr, label %emptyRunQueue, label %goodQueue
+    %next    = call %TCB* @dequeueTCB(%Queue* %queue)
+    %nothr   = icmp eq %TCB* %next, null
+    br i1 %nothr, label %emptyRunQueue, label %gotNextThread
 
 emptyRunQueue:
-    %origst = load %Stack* @original_stack
+    ; see if there is anyone sleeping we shld wait for.
+    %sleeps  = load %SortList** @sleeping_queue
+    %nextsi  = call i8* @getSortListItem(%SortList* %sleeps)
+    %nosls   = icmp eq i8* %nextsi, null
+    br i1 %nosls, label %emptySleepQueue, label %waitForSleepers
+
+waitForSleepers:
+    %nexts   = bitcast i8* %nextsi to %SleepWaiter*
+    %tiltckp = getelementptr %SleepWaiter* %nexts, i32 0, i32 0
+    %tiltck  = load %Ticks* %tiltckp
+    call void @addSortListItem(%SortList* %sleeps, i8* %nextsi)
+    call void @sleepUntil(%Ticks %tiltck)
+    br label %start ; do this, because there may be more than one thread to
+                    ; wake up, or because we might have returned early due
+                    ; to a signal.
+
+emptySleepQueue:
+    ; we only get here if all our queues are empty, which means we are done
+    %origst  = load %Stack* @original_stack
     call void @llvm.stackrestore(%Stack %origst)
     ret void
 
-goodQueue:
+gotNextThread:
+    ; set it as the next thread
+    store %TCB* %next, %TCB** @current_thread
     ; restore its stack
-    %stackP = getelementptr %TCB* %next, i32 0, i32 0
-    %stack  = load %Stack* %stackP
+    %stackP  = getelementptr %TCB* %next, i32 0, i32 0
+    %stack   = load %Stack* %stackP
     call void @llvm.stackrestore(%Stack %stack)
     ; return to its caller
+    ret void
+}
+
+define private void @wakeReadySleepers() alwaysinline
+{
+    ; create a new SleepWaiter with the current time and a junk TCB
+    %now    = call %Ticks @getTicks()
+    %sptr   = alloca %SleepWaiter
+    %sptri  = bitcast %SleepWaiter* %sptr to i8*
+    %nowp   = getelementptr %SleepWaiter* %sptr, i32 0, i32 0
+    store %Ticks %now, %Ticks* %nowp
+    ; grab the sleep queue
+    %sleeps = load %SortList** @sleeping_queue
+    br label %pullLoop
+
+pullLoop:
+    %nextpi = call i8* @getSortListItem(%SortList* %sleeps)
+    %isNull = icmp eq i8* %nextpi, null
+    br i1 %isNull, label %done, label %checkWakeTime
+
+checkWakeTime:
+    %compv  = call i8 @compareSleepers(i8* %nextpi, i8* %sptri)
+    %keep   = icmp sle i8 %compv, 0
+    br i1 %keep, label %promoteItem, label %returnItem
+
+promoteItem:
+    %nextp  = bitcast i8* %nextpi to %SleepWaiter*
+    %tcbp   = getelementptr %SleepWaiter* %nextp, i32 0, i32 1
+    %tcb    = load %TCB** %tcbp
+    %rqueue = load %Queue** @running_queue
+    call void @enqueueTCB(%Queue* %rqueue, %TCB* %tcb)
+    call void @free(i8* %nextpi)
+    br label %pullLoop
+
+returnItem:
+    call void @addSortListItem(%SortList* %sleeps, i8* %nextpi)
+    br label %done
+
+done:
     ret void
 }
 
@@ -481,4 +570,23 @@ define private void @addWaiterAndBlock(%Channel* %chan, i8* %val) noinline naked
     ret void
 }
 
-
+define private i8 @compareSleepers(i8* %sleep1i, i8* %sleep2i)
+{
+    %sleep1 = bitcast i8* %sleep1i to %SleepWaiter*
+    %sleep2 = bitcast i8* %sleep2i to %SleepWaiter*
+    %time1p = getelementptr %SleepWaiter* %sleep1, i32 0, i32 0
+    %time2p = getelementptr %SleepWaiter* %sleep2, i32 0, i32 0
+    %time1  = load %Ticks* %time1p
+    %time2  = load %Ticks* %time2p
+    %comp1  = icmp ult %Ticks %time1, %time2
+    br i1 %comp1, label %lesst, label %greaterequal
+lesst:
+    ret i8 -1
+greaterequal:
+    %comp2  = icmp eq %Ticks %time1, %time2
+    br i1 %comp2, label %equal, label %greater
+equal:
+    ret i8 0
+greater:
+    ret i8 1
+}

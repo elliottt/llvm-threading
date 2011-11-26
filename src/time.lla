@@ -121,3 +121,43 @@ error:
 done:
     ret void
 }
+
+define  void @sleepUntil(%Ticks %ticks)
+{
+    %tval   = alloca %TimeSpec
+    call void @ticksToTimespec(%Ticks %ticks, %TimeSpec* %tval)
+    %res    = call i32 @clock_nanosleep(i32 1,  ; CLOCK_MONOTONIC
+                                        i32 1,  ; TIMER_ABSTIME
+                                        %TimeSpec* %tval, ; request
+                                        %TimeSpec* null)  ; dont care
+    switch i32 %res, label %weird [
+        i32 0,  label %done               ; no error
+        i32 14, label %invalidAddress     ; EFAULT
+        i32 22, label %invalidTime        ; EINVAL
+        i32 4,  label %done               ; EINTR
+      ]
+
+weird:
+    %errstrW   = getelementptr [47 x i8]* @.ERR_weird, i32 0, i32 0
+    br label %error
+
+invalidAddress:
+    %errstrIA  = getelementptr [43 x i8]* @.ERR_badaddr, i32 0, i32 0
+    br label %error
+
+invalidTime:
+    %errstrIT  = getelementptr [45 x i8]* @.ERR_badtval, i32 0, i32 0
+    br label %error
+
+error:
+    %errstr    = phi i8* [%errstrW, %weird], [%errstrIA, %invalidAddress],
+                         [%errstrIT, %invalidTime]
+    %basestr   = getelementptr [11 x i8]* @.ERR, i32 0, i32 0
+    call i32(i8*,...)* @printf(i8* %basestr, i8* %errstr)
+    call void @exit(i32 -1)
+    unreachable
+
+done:
+    ret void
+}
+

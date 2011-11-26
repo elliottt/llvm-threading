@@ -10,5 +10,6 @@ declare %Ticks @timespecToTicks(%TimeSpec* %tval)
 declare void   @ticksToTimespec(%Ticks %ticks, %TimeSpec* %tval)
 declare %Ticks @getTicks()
 declare void   @sleepFor(%Ticks %ticks)
+declare void   @sleepUntil(%Ticks %ticks)
 
 #endif
