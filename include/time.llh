@@ -1,6 +1,7 @@
 #ifndef TIME_LLH
 #define TIME_LLH
 
+
 %Ticks     = type i64
 
 declare %Ticks @microsecondsToTicks(i64 %microseconds)

@@ -1,6 +1,13 @@
 #ifndef SYSTEM_LLH
 #define SYSTEM_LLH
 
+; 2^6 microseconds per tick = 64 microseconds per tick.
+#define MICROSECONDS_TO_TICKS_SHIFT 6
+; 300 ticks per timeslice = 19,200 microseconds per timeslice.
+; (as a comparison, I believe GHC defaults to 20 milliseconds,
+; or 20,000 microseconds, per timeslice.)
+#define TICKS_PER_TIMESLICE 300
+
 %TimeT     = type i64
 %TimeSpec  = type { %TimeT, %TimeT }
 

@@ -7,13 +7,13 @@
 
 define %Ticks @microsecondsToTicks(i64 %microseconds)
 {
-    %res = ashr i64 %microseconds, 6
+    %res = ashr i64 %microseconds, MICROSECONDS_TO_TICKS_SHIFT
     ret %Ticks %res
 }
 
 define i64 @ticksToMicroseconds(%Ticks %ticks)
 {
-    %res = shl i64 %ticks, 6
+    %res = shl i64 %ticks, MICROSECONDS_TO_TICKS_SHIFT
     ret i64 %res
 }
 

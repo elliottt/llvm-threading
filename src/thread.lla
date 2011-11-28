@@ -18,6 +18,7 @@
 
 @running_queue  = internal global %Queue*    null
 @sleeping_queue = internal global %SortList* null
+@change_thrs_at = internal global %Ticks     0
 @current_thread = internal global %TCB*      null
 @original_stack = internal global %Stack     null
 
@@ -30,12 +31,15 @@
 ; create the main running task, and global queues
 define void @run_threaded_system(%task* %t, i8* %val, i32 %stackSize) naked
 {
-    %cur_s  = call %Stack @llvm.stacksave()
-    %queue  = call %Queue* @newQueue()
-    %squeue = call %SortList* @newSortedList(%Comparator* @compareSleepers)
+    %cur_s    = call %Stack @llvm.stacksave()
+    %queue    = call %Queue* @newQueue()
+    %squeue   = call %SortList* @newSortedList(%Comparator* @compareSleepers)
+    %now      = call %Ticks @getTicks()
+    %switchAt = add %Ticks %now, TICKS_PER_TIMESLICE
     store %Queue* %queue, %Queue** @running_queue
     store %SortList* %squeue, %SortList** @sleeping_queue
     store %Stack %cur_s, %Stack* @original_stack
+    store %Ticks %switchAt, %Ticks* @change_thrs_at
     call %TCB* @create_thread(%task* %t, i8* %val, i32 %stackSize)
     ret void ; dont think we can get here, but ...
 }
@@ -95,6 +99,42 @@ define void @yield() naked
     ; there is no currently running thread!
     store %TCB* null, %TCB** @current_thread
     call void @schedule()
+    ret void
+}
+
+; maybeYield
+;    INPUTS: none
+;    OUTPUTS: none
+;    SIDE EFFECTS:
+;      Yields execution if the given thread has outlived its proposed
+;      time slice.
+define void @maybeYield() naked
+{
+    %now      = call %Ticks @getTicks()
+    %switchAt = load %Ticks* @change_thrs_at
+    %switch   = icmp uge %Ticks %now, %switchAt
+    br i1 %switch, label %shouldReschedule, label %keepGoing
+
+shouldReschedule:
+    ; OK, recompute when to switch
+    %newSwtch = add %Ticks %now, TICKS_PER_TIMESLICE
+    store %Ticks %newSwtch, %Ticks* @change_thrs_at
+    ; run the yield
+    %cur_t   = load %TCB** @current_thread
+    ; get the current stack and bang it into the structure
+    %cur_s   = call %Stack @llvm.stacksave()
+    %stackPP = getelementptr %TCB* %cur_t, i32 0, i32 0
+    store %Stack %cur_s, %Stack* %stackPP
+    ; add the current thread object to the running queue
+    %queue   = load %Queue** @running_queue
+    call void @enqueueTCB(%Queue* %queue, %TCB* %cur_t)
+    ; there is no currently running thread!
+    store %TCB* null, %TCB** @current_thread
+    ; and switch threads
+    call void @schedule()
+    ret void
+
+keepGoing:
     ret void
 }
 

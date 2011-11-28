@@ -26,18 +26,28 @@ TEST_RUNNERS = $(sort $(patsubst %.elf,%,$(TESTS)))
 all: $(TESTS)
 	@for t in $(TEST_RUNNERS); do $(MAKE) -s $$t; done
 
+
 tests/%: tests/%.elf
 	@if [ -f $@.gold ]; then                \
-	  export F=`mktemp` ;                   \
-	  ./$< > $${F} ;                        \
-	  if `cmp -s $${F} $@.gold`; then       \
-	    echo "Test $@ PASSED" ;             \
-	  else                                  \
-	    echo "Test $@ FAILED" ;             \
-	  fi ;                                  \
-	  rm $${F} ;                            \
+	    export F=`mktemp` ;                 \
+	    ./$< > $${F} ;                      \
+	    if `cmp -s $${F} $@.gold`; then     \
+	      echo "Test $@ PASSED" ;           \
+	    else                                \
+	      echo "Test $@ FAILED" ;           \
+	    fi ;                                \
+	    rm $${F} ;                          \
 	else                                    \
-	  ./$<;                                 \
+	    if [ -x $@.check ]; then            \
+	        ./$< | ./$@.check;              \
+	        if [ $$? -ne "0" ]; then        \
+	           echo "Test $@ FAILED" ;      \
+	        else                            \
+	           echo "Test $@ PASSED" ;      \
+	        fi ;                            \
+	    else                                \
+	        ./$<;                           \
+	    fi                                  \
 	fi
 
 tests: $(TESTS_ELFS)

@@ -17,6 +17,7 @@ typedef struct thread thread;
 extern void run_threaded_system(task, void*, stack_size);
 
 extern thread *create_thread(task, void*, stack_size);
+extern void maybeYield();
 extern void yield();
 extern void sleep(uint64_t microseconds);
 extern void thread_join(thread *);
