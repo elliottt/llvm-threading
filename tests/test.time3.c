@@ -25,5 +25,7 @@ int main(int argc, char **argv)
     printf("PASSED PART TWO\n");
   else
     printf("FAILED PART TWO (%lli + %lli > %lli)\n", b, delay, c);
+
+  return 0;
 }
 
