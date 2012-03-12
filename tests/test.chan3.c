@@ -26,7 +26,7 @@ void receiver(void *dead)
       } else {
         printf("Received value 0x%lx\n", (unsigned long)val);
       }
-      if((unsigned long)val != i) printf("Bad value!\n");
+      if((unsigned long)val != i) printf("Bad value! (%i!=%i)\n",val,i);
   }
 }
 

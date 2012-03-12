@@ -4,7 +4,13 @@
 #include "sorted_list.llh"
 #include "time.llh"
 
-%TCB         = type { %Stack, i8*, %Queue* }
+#define STACK_SAFETY_LAYER 128
+
+%TCB         = type {
+    %Stack  ; --> top of the stack, where we are right now
+  , i8*     ; --> the bottom of the stack, used for freeing the stack later
+  , %Queue* ; --> the people waiting for this thread in order to continue
+  }
 %ChanWaiter  = type { %TCB*, i8* }
 %SleepWaiter = type { %Ticks, %TCB* }
 %Channel     = type {
@@ -29,19 +35,60 @@
 ; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 ; create the main running task, and global queues
-define void @run_threaded_system(%task* %t, i8* %val, i32 %stackSize) naked
+define coldcc void @run_threaded_system(%task* %t, i8* %val, i64 %stackSize)
+{
+    ; initialize the original call stack
+    tail call void asm sideeffect "push %rbp",""()
+    tail call void asm sideeffect "push %rbx",""()
+    tail call void asm sideeffect "push %r12",""()
+    tail call void asm sideeffect "push %r13",""()
+    tail call void asm sideeffect "push %r14",""()
+    tail call void asm sideeffect "push %r15",""()
+    ; jump into a helper function so that we come back here when the
+    ; threaded system is done.
+    call void @run_threaded_system2(%task* %t, i8* %val, i64 %stackSize)
+    tail call void asm sideeffect "pop %r15",""()
+    tail call void asm sideeffect "pop %r14",""()
+    tail call void asm sideeffect "pop %r13",""()
+    tail call void asm sideeffect "pop %r12",""()
+    tail call void asm sideeffect "pop %rbx",""()
+    tail call void asm sideeffect "pop %rbp",""()
+    ret void
+}
+
+define private void @run_threaded_system2(%task* %t, i8* %val, i64 %stackSize)
+   naked
 {
     %cur_s    = call %Stack @llvm.stacksave()
+    store %Stack %cur_s, %Stack* @original_stack
+    ; initialize the runing queue
     %queue    = call %Queue* @newQueue()
+    store %Queue* %queue, %Queue** @running_queue
+    ; initialize the sleeping queue
     %squeue   = call %SortList* @newSortedList(%Comparator* @compareSleepers)
+    store %SortList* %squeue, %SortList** @sleeping_queue
+    ; initialize the time to change threads
     %now      = call %Ticks @getTicks()
     %switchAt = add %Ticks %now, TICKS_PER_TIMESLICE
-    store %Queue* %queue, %Queue** @running_queue
-    store %SortList* %squeue, %SortList** @sleeping_queue
-    store %Stack %cur_s, %Stack* @original_stack
     store %Ticks %switchAt, %Ticks* @change_thrs_at
-    call %TCB* @create_thread(%task* %t, i8* %val, i32 %stackSize)
-    ret void ; dont think we can get here, but ...
+    ; initialize the current thread to nil for now.
+    store %TCB* null, %TCB** @current_thread
+    ; create the initial thread
+    %tcb     = call %TCB* @alloc_tcb() ; the new thread object
+    %s       = call %Stack @malloc(i64 %stackSize) ; the new stack
+    %s_int   = ptrtoint %Stack %s to i64 ; as an integer
+    %s_top   = add i64 %s_int, %stackSize
+    %s_topm8 = sub i64 %s_top, STACK_SAFETY_LAYER
+    %s_topp  = inttoptr i64 %s_topm8 to %Stack
+    %tcbstt  = getelementptr %TCB* %tcb, i32 0, i32 0 ; stack top ptr loc
+    %tcbstb  = getelementptr %TCB* %tcb, i32 0, i32 1 ; stack bottom ptr loc
+    store i8* %s_topp, %Stack* %tcbstt ; bang in the top of the stack
+    store i8* %s, i8** %tcbstb ; bang in the bottom of the stack (for freeing)
+    ; go!
+    store %TCB* %tcb, %TCB** @current_thread
+    call void @llvm.stackrestore(%Stack %s_topp)
+    call void @start_thread(%task* %t, i8* %val)
+    ret void ; probably will not get here
 }
 
 ; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -61,22 +108,57 @@ define void @run_threaded_system(%task* %t, i8* %val, i32 %stackSize) naked
 ;   SIDE EFFECTS:
 ;                 Creates a new thread and begins running it; in other words,
 ;                 the current thread will yield immediately to the new thread.
-define %TCB* @create_thread(%task* %t, i8* %val, i32 %stackSize) naked noreturn
+define ccc %TCB* @create_thread(%task* %t, i8* %val, i64 %stackSize)
 {
-    ; allocate the new thread object
-    %tcb     = call %TCB* @alloc_tcb()
-    %s       = call %Stack @malloc(i32 %stackSize)
-    %top     = getelementptr %Stack %s, i32 %stackSize
-    %topi    = ptrtoint %Stack %top to i64
-    %topm8i  = sub i64 %topi, 8
-    %topm8   = inttoptr i64 %topm8i to %Stack
-    %tcbstt  = getelementptr %TCB* %tcb, i32 0, i32 0
-    %tcbstb  = getelementptr %TCB* %tcb, i32 0, i32 1
-    store i8* %topm8, %Stack* %tcbstt
-    store i8* %s, i8** %tcbstb
-    ; call into our helper (we will end up returning here)
+    ; save the callee-save registers ... just in case
+    tail call void asm sideeffect "push %rbp",""()
+    tail call void asm sideeffect "push %rbx",""()
+    tail call void asm sideeffect "push %r12",""()
+    tail call void asm sideeffect "push %r13",""()
+    tail call void asm sideeffect "push %r14",""()
+    tail call void asm sideeffect "push %r15",""()
+    ; create the new thread
+    %tcb     = call %TCB* @alloc_tcb() ; the new thread object
+    %s       = call %Stack @malloc(i64 %stackSize) ; the new stack
+    %s_int   = ptrtoint %Stack %s to i64 ; as an integer
+    %s_top   = add i64 %s_int, %stackSize
+    %s_topm8 = sub i64 %s_top, STACK_SAFETY_LAYER
+    %s_topp  = inttoptr i64 %s_topm8 to %Stack
+    %tcbstt  = getelementptr %TCB* %tcb, i32 0, i32 0 ; stack top ptr loc
+    %tcbstb  = getelementptr %TCB* %tcb, i32 0, i32 1 ; stack bottom ptr loc
+    store i8* %s_topp, %Stack* %tcbstt ; bang in the top of the stack
+    store i8* %s, i8** %tcbstb ; bang in the bottom of the stack (for freeing)
+    ; jump to the helper function (below) to save the current thread and switch
+    ; to the new thread, so that when the original thread returns to this point
     call void @create_thread2(%task* %t, i8* %val, %TCB* %tcb)
+    tail call void asm sideeffect "pop %r15",""()
+    tail call void asm sideeffect "pop %r14",""()
+    tail call void asm sideeffect "pop %r13",""()
+    tail call void asm sideeffect "pop %r12",""()
+    tail call void asm sideeffect "pop %rbx",""()
+    tail call void asm sideeffect "pop %rbp",""()
     ret %TCB* %tcb
+}
+
+define private void @create_thread2(%task* %t, i8* %val, %TCB* %tcb)
+  noreturn naked
+{
+    ; save the stack
+    %cur_s   = call %Stack @llvm.stacksave()
+    %cur_t   = load %TCB** @current_thread
+    %stackPP = getelementptr %TCB* %cur_t, i32 0, i32 0
+    store %Stack %cur_s, %Stack* %stackPP
+    ; add the current thread object to the run queue and reset the current
+    ; thread pointer to null
+    %queue   = load %Queue** @running_queue
+    call void @enqueueTCB(%Queue* %queue, %TCB* %cur_t)
+    ; "restore" the stack and call into the function we want
+    store %TCB* %tcb, %TCB** @current_thread
+    %tcpstt  = getelementptr %TCB* %tcb, i32 0, i32 0
+    %stack   = load %Stack* %tcpstt
+    call void @llvm.stackrestore(%Stack %stack)
+    call void @start_thread(%task* %t, i8* %val)
+    unreachable
 }
 
 ; yield
@@ -85,12 +167,31 @@ define %TCB* @create_thread(%task* %t, i8* %val, i32 %stackSize) naked noreturn
 ;    SIDE EFFECTS:
 ;      Yields execution to the next thread in the run queue. If there are
 ;      no other threads available to run, will restart the current thread.
-define void @yield() naked
+define coldcc void @yield()
 {
-    ; get the current thread object
-    %cur_t   = load %TCB** @current_thread
+    ; save the callee-saved registers
+    tail call void asm sideeffect "push %rbp",""()
+    tail call void asm sideeffect "push %rbx",""()
+    tail call void asm sideeffect "push %r12",""()
+    tail call void asm sideeffect "push %r13",""()
+    tail call void asm sideeffect "push %r14",""()
+    tail call void asm sideeffect "push %r15",""()
+    ; jump into a helper function so we return here
+    call void @yield2()
+    tail call void asm sideeffect "pop %r15",""()
+    tail call void asm sideeffect "pop %r14",""()
+    tail call void asm sideeffect "pop %r13",""()
+    tail call void asm sideeffect "pop %r12",""()
+    tail call void asm sideeffect "pop %rbx",""()
+    tail call void asm sideeffect "pop %rbp",""()
+    ret void
+}
+
+define private void @yield2() naked
+{
     ; get the current stack and bang it into the structure
     %cur_s   = call %Stack @llvm.stacksave()
+    %cur_t   = load %TCB** @current_thread
     %stackPP = getelementptr %TCB* %cur_t, i32 0, i32 0
     store %Stack %cur_s, %Stack* %stackPP
     ; add the current thread object to the running queue
@@ -108,7 +209,7 @@ define void @yield() naked
 ;    SIDE EFFECTS:
 ;      Yields execution if the given thread has outlived its proposed
 ;      time slice.
-define void @maybeYield() naked
+define coldcc void @maybeYield()
 {
     %now      = call %Ticks @getTicks()
     %switchAt = load %Ticks* @change_thrs_at
@@ -121,17 +222,19 @@ shouldReschedule:
     store %Ticks %newSwtch, %Ticks* @change_thrs_at
     ; run the yield
     %cur_t   = load %TCB** @current_thread
-    ; get the current stack and bang it into the structure
-    %cur_s   = call %Stack @llvm.stacksave()
-    %stackPP = getelementptr %TCB* %cur_t, i32 0, i32 0
-    store %Stack %cur_s, %Stack* %stackPP
-    ; add the current thread object to the running queue
-    %queue   = load %Queue** @running_queue
-    call void @enqueueTCB(%Queue* %queue, %TCB* %cur_t)
-    ; there is no currently running thread!
-    store %TCB* null, %TCB** @current_thread
-    ; and switch threads
-    call void @schedule()
+    tail call void asm sideeffect "push %rbp",""()
+    tail call void asm sideeffect "push %rbx",""()
+    tail call void asm sideeffect "push %r12",""()
+    tail call void asm sideeffect "push %r13",""()
+    tail call void asm sideeffect "push %r14",""()
+    tail call void asm sideeffect "push %r15",""()
+    call void @yield2()
+    tail call void asm sideeffect "pop %r15",""()
+    tail call void asm sideeffect "pop %r14",""()
+    tail call void asm sideeffect "pop %r13",""()
+    tail call void asm sideeffect "pop %r12",""()
+    tail call void asm sideeffect "pop %rbx",""()
+    tail call void asm sideeffect "pop %rbp",""()
     ret void
 
 keepGoing:
@@ -148,9 +251,9 @@ define %Channel* @create_channel()
 {
     ; allocate and initialize the memory to zero
     %ptrChan = getelementptr %Channel* null, i32 1
-    %szChan  = ptrtoint %Channel* %ptrChan to i32
-    %ptr     = call i8* @malloc(i32 %szChan)
-    call void @llvm.memset.p0i8.i32(i8* %ptr, i8 0, i32 %szChan, i32 1, i1 0)
+    %szChan  = ptrtoint %Channel* %ptrChan to i64
+    %ptr     = call i8* @malloc(i64 %szChan)
+    call void @llvm.memset.p0i8.i64(i8* %ptr, i8 0, i64 %szChan, i32 1, i1 0)
     ; allocate the thread queue and set the pointer
     %retval  = bitcast i8* %ptr to %Channel*
     %qptr    = getelementptr %Channel* %retval, i32 0, i32 1
@@ -178,7 +281,7 @@ define %Channel* @create_channel()
 ;
 ;       Channel sends and receives use a fair algorithm.
 ;
-define i32 @send_channel(%Channel* %chan, i8* %val)
+define coldcc i32 @send_channel(%Channel* %chan, i8* %val) naked
 {
     %ptrst = getelementptr %Channel* %chan, i32 0, i32 0
     %state = load i8* %ptrst
@@ -257,7 +360,7 @@ bad_chan:
 ;
 ;     Channel sends and receives use a fair algorithm.
 ;
-define i32 @recv_channel(%Channel* %chan, i8** %valp)
+define coldcc i32 @recv_channel(%Channel* %chan, i8** %valp)
 {
     %ptrst = getelementptr %Channel* %chan, i32 0, i32 0
     %state = load i8* %ptrst
@@ -327,7 +430,27 @@ bad_chan:
 ;   SIDE EFFECTS
 ;     Blocks the execution of the current thread until the passed thread
 ;     completes.
-define void @thread_join(%TCB* %thread) naked
+define coldcc void @thread_join(%TCB* %thread)
+{
+    ; save the callee-saved registers
+    tail call void asm sideeffect "push %rbp",""()
+    tail call void asm sideeffect "push %rbx",""()
+    tail call void asm sideeffect "push %r12",""()
+    tail call void asm sideeffect "push %r13",""()
+    tail call void asm sideeffect "push %r14",""()
+    tail call void asm sideeffect "push %r15",""()
+    ; jump into a helper function so we return here
+    call void @yield2()
+    tail call void asm sideeffect "pop %r15",""()
+    tail call void asm sideeffect "pop %r14",""()
+    tail call void asm sideeffect "pop %r13",""()
+    tail call void asm sideeffect "pop %r12",""()
+    tail call void asm sideeffect "pop %rbx",""()
+    tail call void asm sideeffect "pop %rbp",""()
+    ret void
+}
+
+define coldcc void @thread_join2(%TCB* %thread) naked
 {
     ; get the current thread object
     %cur_t  = load %TCB** @current_thread
@@ -357,12 +480,32 @@ define void @thread_join(%TCB* %thread) naked
 ;     Note that the threading system is not guaranteed to be microsecond-
 ;     accurate nor real time, so it is likely that the delay will be slightly
 ;     longer than requested.
-define void @sleep(i64 %microseconds) naked
+define coldcc void @sleep(i64 %microseconds)
+{
+    ; save the callee-saved registers
+    tail call void asm sideeffect "push %rbp",""()
+    tail call void asm sideeffect "push %rbx",""()
+    tail call void asm sideeffect "push %r12",""()
+    tail call void asm sideeffect "push %r13",""()
+    tail call void asm sideeffect "push %r14",""()
+    tail call void asm sideeffect "push %r15",""()
+    ; jump into a helper function so we return here
+    call void @sleep2(i64 %microseconds)
+    tail call void asm sideeffect "pop %r15",""()
+    tail call void asm sideeffect "pop %r14",""()
+    tail call void asm sideeffect "pop %r13",""()
+    tail call void asm sideeffect "pop %r12",""()
+    tail call void asm sideeffect "pop %rbx",""()
+    tail call void asm sideeffect "pop %rbp",""()
+    ret void
+}
+
+define coldcc void @sleep2(i64 %microseconds) naked
 {
     ; compute the size of a sleeper and allocate it
     %ptrsl  = getelementptr %SleepWaiter* null, i32 1
-    %szsl   = ptrtoint %SleepWaiter* %ptrsl to i32
-    %ptr    = call i8* @malloc(i32 %szsl)
+    %szsl   = ptrtoint %SleepWaiter* %ptrsl to i64
+    %ptr    = call i8* @malloc(i64 %szsl)
     %ptrs   = bitcast i8* %ptr to %SleepWaiter*
     ; find the time to wake up and store it in the structure
     %sticks = call %Ticks @microsecondsToTicks(i64 %microseconds)
@@ -412,9 +555,9 @@ define private %TCB* @dequeueTCB(%Queue* %queue)
 define private %TCB* @alloc_tcb() {
     ; allocate and zero out the structure
     %ptr_tcb = getelementptr %TCB* null, i32 1
-    %sz_tcb  = ptrtoint %TCB* %ptr_tcb to i32
-    %ptr     = call i8* @malloc(i32 %sz_tcb)
-    call void @llvm.memset.p0i8.i32(i8* %ptr, i8 0, i32 %sz_tcb, i32 1, i1 0)
+    %sz_tcb  = ptrtoint %TCB* %ptr_tcb to i64
+    %ptr     = call i8* @malloc(i64 %sz_tcb)
+    call void @llvm.memset.p0i8.i64(i8* %ptr, i8 0, i64 %sz_tcb, i32 1, i1 0)
     ; initialize the join list
     %tcb     = bitcast i8* %ptr to %TCB*
     %jlist   = call %Queue* @newQueue()
@@ -424,40 +567,7 @@ define private %TCB* @alloc_tcb() {
     ret %TCB* %tcb
 }
 
-define private void @create_thread2(%task* %t, i8* %val, %TCB* %tcb)
-  noinline naked
-{
-    ; get the current thread object
-    %cur_t   = load %TCB** @current_thread
-    %isNull  = icmp eq %TCB* %cur_t, null
-    br i1 %isNull, label %createNew, label %saveCurrent
-
-saveCurrent:
-    ; get the current stack and bang it into the structure
-    %cur_s   = call %Stack @llvm.stacksave()
-    %stackPP = getelementptr %TCB* %cur_t, i32 0, i32 0
-    store %Stack %cur_s, %Stack* %stackPP
-    ; add the current thread object to the running queue
-    %queue   = load %Queue** @running_queue
-    call void @enqueueTCB(%Queue* %queue, %TCB* %cur_t)
-    ; there is no currently running thread!
-    store %TCB* null, %TCB** @current_thread
-    br label %createNew
-
-createNew:
-    ; create the new TCB and set it as the currently-running thread
-    store %TCB* %tcb, %TCB** @current_thread
-    ; "restore" the stack and call into the function we want
-    %tcpstt = getelementptr %TCB* %tcb, i32 0, i32 0
-    %stack  = load %Stack* %tcpstt
-    call void @llvm.stackrestore(%Stack %stack)
-    call void @start_thread(%task* %t, i8* %val)
-
-    ; shouldnt get here
-    unreachable
-}
-
-define private void @start_thread(%task* %t, i8* %data) naked noreturn
+define private void @start_thread(%task* %t, i8* %data) noreturn
 {
     ; run the body of the thread
     call void %t(i8* %data)
@@ -486,7 +596,7 @@ cleanup:
     call void @free(i8* %stack)
     call void @free(i8* %curi8)
     store %TCB* null, %TCB** @current_thread
-    call void @schedule()
+    tail call void @schedule()
     unreachable
 }
 
@@ -578,8 +688,8 @@ done:
 define private i8* @buildWaitStruct(%TCB* %cur_t, i8* %val)
 {
     %ptr0    = getelementptr %ChanWaiter* null, i32 1
-    %wsz     = ptrtoint %ChanWaiter* %ptr0 to i32
-    %ptr1    = call i8* @malloc(i32 %wsz)
+    %wsz     = ptrtoint %ChanWaiter* %ptr0 to i64
+    %ptr1    = call i8* @malloc(i64 %wsz)
     %ptr2    = bitcast i8* %ptr1 to %ChanWaiter*
     %ptrTCB0 = getelementptr %ChanWaiter* %ptr2, i32 0, i32 0
     %ptrVal0 = getelementptr %ChanWaiter* %ptr2, i32 0, i32 1
@@ -591,7 +701,28 @@ define private i8* @buildWaitStruct(%TCB* %cur_t, i8* %val)
 ; this needs to be no-inline, so that when we return to the current thread
 ; when the receive or send happens, we "return" back to the main body of the
 ; calling function
-define private void @addWaiterAndBlock(%Channel* %chan, i8* %val) noinline naked
+define private void @addWaiterAndBlock(%Channel* %chan, i8* %val)
+{
+    ; save the callee-saved registers
+    tail call void asm sideeffect "push %rbp",""()
+    tail call void asm sideeffect "push %rbx",""()
+    tail call void asm sideeffect "push %r12",""()
+    tail call void asm sideeffect "push %r13",""()
+    tail call void asm sideeffect "push %r14",""()
+    tail call void asm sideeffect "push %r15",""()
+    ; jump into a helper function so we return here
+    call void @addWaiterAndBlock2(%Channel* %chan, i8* %val)
+    tail call void asm sideeffect "pop %r15",""()
+    tail call void asm sideeffect "pop %r14",""()
+    tail call void asm sideeffect "pop %r13",""()
+    tail call void asm sideeffect "pop %r12",""()
+    tail call void asm sideeffect "pop %rbx",""()
+    tail call void asm sideeffect "pop %rbp",""()
+    ret void
+}
+
+define private void @addWaiterAndBlock2(%Channel* %chan, i8* %val)
+   noinline naked
 {
     ; get the current thread object
     %cur_t   = load %TCB** @current_thread

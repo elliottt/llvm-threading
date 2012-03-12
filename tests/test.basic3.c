@@ -3,8 +3,6 @@
 
 #include "thread.h"
 
-extern void *current_thread;
-
 void test(void *data) {
     int i;
 

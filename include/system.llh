@@ -11,7 +11,7 @@
 %TimeT     = type i64
 %TimeSpec  = type { %TimeT, %TimeT }
 
-declare i8*  @malloc(i32)
+declare i8*  @malloc(i64)
 declare void @free(i8*)
 
 declare i64  @clock_gettime(i32, %TimeSpec*)

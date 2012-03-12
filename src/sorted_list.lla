@@ -4,8 +4,8 @@
 define %SortList* @newSortedList(%Comparator* %comp)
 {
     %ptr_sl = getelementptr %SortList* null, i32 1
-    %sizesl = ptrtoint %SortList* %ptr_sl to i32
-    %ptr    = call i8* @malloc(i32 %sizesl)
+    %sizesl = ptrtoint %SortList* %ptr_sl to i64
+    %ptr    = call i8* @malloc(i64 %sizesl)
     %list   = bitcast i8* %ptr to %SortList*
 
     %ptrhd  = getelementptr %SortList* %list, i32 0, i32 0
@@ -43,8 +43,8 @@ define void @addSortListItem(%SortList* %list, i8* %item)
 start:
     ; allocate and set up most of the new node
     %sznd   = getelementptr %SortListNode* null, i32 1
-    %szndi  = ptrtoint %SortListNode* %sznd to i32
-    %nodep  = call i8* @malloc(i32 %szndi)
+    %szndi  = ptrtoint %SortListNode* %sznd to i64
+    %nodep  = call i8* @malloc(i64 %szndi)
     %node   = bitcast i8* %nodep to %SortListNode*
     %valp   = getelementptr %SortListNode* %node, i32 0, i32 1
     store i8* %item, i8** %valp

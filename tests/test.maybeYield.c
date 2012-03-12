@@ -1,9 +1,5 @@
-
 #include <stdio.h>
-
 #include "thread.h"
-
-extern void *current_thread;
 
 double fact(int x)
 {
@@ -12,6 +8,8 @@ double fact(int x)
 
     for(i = 1; i <= x; i++)
         res *= (double)i;
+
+    return res;
 }
 
 void test(void *data) {
@@ -29,12 +27,12 @@ void initThread(void *dead)
     long i = 0;
 
     for(i = 1; i < 10; i++)
-      create_thread(test, (void*)i, 10240);
+      create_thread(test, (void*)i, 102400);
     test((void*)0);
 }
 
 int main(int argc, char **argv)
 {
-    run_threaded_system(initThread, (void*)0, 10240);
+    run_threaded_system(initThread, (void*)0, 102400);
     return 0;
 }

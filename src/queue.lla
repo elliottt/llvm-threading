@@ -8,9 +8,9 @@
 define %Queue* @newQueue()
 {
     %fkptr  = getelementptr %Queue* null, i32 1
-    %szlist = ptrtoint %Queue* %fkptr to i32
-    %ptr    = call i8* @malloc(i32 %szlist)
-    call void @llvm.memset.p0i8.i32(i8* %ptr, i8 0, i32 %szlist, i32 1, i1 0)
+    %szlist = ptrtoint %Queue* %fkptr to i64
+    %ptr    = call i8* @malloc(i64 %szlist)
+    call void @llvm.memset.p0i8.i64(i8* %ptr, i8 0, i64 %szlist, i32 1, i1 0)
     %retptr = bitcast i8* %ptr to %Queue*
     ret %Queue* %retptr
 }
@@ -27,8 +27,8 @@ define void @enqueue(%Queue* %ptr, i8* %val)
 {
     ; allocate the new node
     %fkptr   = getelementptr %QueueNode* null, i32 1
-    %size    = ptrtoint %QueueNode* %fkptr to i32
-    %tempPtr = call i8* @malloc(i32 %size)
+    %size    = ptrtoint %QueueNode* %fkptr to i64
+    %tempPtr = call i8* @malloc(i64 %size)
     %newNode = bitcast i8* %tempPtr to %QueueNode*
     ; fill in the fields
     %nextPtr = getelementptr %QueueNode* %newNode, i32 0, i32 0

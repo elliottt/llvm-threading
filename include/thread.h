@@ -8,7 +8,7 @@ extern "C" {
 #include <stdint.h>
 
 typedef void(*task)(void *);
-typedef int stack_size;
+typedef uint64_t stack_size;
 
 struct channel;
 typedef struct channel channel;
