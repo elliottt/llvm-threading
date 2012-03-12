@@ -3,7 +3,12 @@
 
 %Comparator     = type i8(i8*, i8*)
 %SortListNode   = type { %SortListNode*, i8* }
+#define LNODE_FIELD_NEXT        0
+#define LNODE_FIELD_VAL         1
+
 %SortList       = type { %SortListNode*, %Comparator* }
+#define SLIST_FIELD_FIRST       0
+#define SLIST_FIELD_COMPARATOR  1
 
 declare %SortList* @newSortedList(%Comparator* %comp)
 declare %SortList* @newSortedListLT()

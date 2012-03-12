@@ -2,7 +2,12 @@
 #define QUEUE_LLH
 
 %QueueNode = type { %QueueNode*, i8* }
+#define NODE_FIELD_NEXT         0
+#define NODE_FIELD_VAL          1
+
 %Queue     = type { %QueueNode*, %QueueNode* }
+#define QUEUE_FIELD_FIRST       0
+#define QUEUE_FIELD_LAST        1
 
 declare %Queue* @newQueue()
 declare void    @freeQueue(%Queue* %ptr)

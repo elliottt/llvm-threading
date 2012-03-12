@@ -8,8 +8,8 @@ define %SortList* @newSortedList(%Comparator* %comp)
     %ptr    = call i8* @malloc(i64 %sizesl)
     %list   = bitcast i8* %ptr to %SortList*
 
-    %ptrhd  = getelementptr %SortList* %list, i32 0, i32 0
-    %ptrcmp = getelementptr %SortList* %list, i32 0, i32 1
+    %ptrhd  = getelementptr %SortList* %list, i32 0, i32 SLIST_FIELD_FIRST
+    %ptrcmp = getelementptr %SortList* %list, i32 0, i32 SLIST_FIELD_COMPARATOR
 
     store %SortListNode* null, %SortListNode** %ptrhd
     store %Comparator* %comp, %Comparator** %ptrcmp
@@ -46,11 +46,11 @@ start:
     %szndi  = ptrtoint %SortListNode* %sznd to i64
     %nodep  = call i8* @malloc(i64 %szndi)
     %node   = bitcast i8* %nodep to %SortListNode*
-    %valp   = getelementptr %SortListNode* %node, i32 0, i32 1
+    %valp   = getelementptr %SortListNode* %node, i32 0, i32 LNODE_FIELD_VAL
     store i8* %item, i8** %valp
     ; get the head of the list and the comparator
-    %ptrls  = getelementptr %SortList* %list, i32 0, i32 0
-    %pcomp  = getelementptr %SortList* %list, i32 0, i32 1
+    %ptrls  = getelementptr %SortList* %list, i32 0, i32 SLIST_FIELD_FIRST
+    %pcomp  = getelementptr %SortList* %list, i32 0, i32 SLIST_FIELD_COMPARATOR
     %list2  = load %SortListNode** %ptrls
     br label %loop
 
@@ -65,7 +65,8 @@ loop:
 
 checkNode:
     ; see if this current value is less than the current node
-    %curDataP  = getelementptr %SortListNode* %curNode, i32 0, i32 1
+    %curDataP  = getelementptr %SortListNode* %curNode, i32 0,
+                               i32 LNODE_FIELD_VAL
     %curData   = load i8** %curDataP
     %comp      = load %Comparator** %pcomp
     %compVal   = call i8 %comp(i8* %item, i8* %curData)
@@ -73,12 +74,13 @@ checkNode:
     br i1 %putHere, label %insertNode, label %tryAgain
 
 tryAgain:
-    %newupdate = getelementptr %SortListNode* %curNode, i32 0, i32 0
+    %newupdate = getelementptr %SortListNode* %curNode, i32 0,
+                               i32 LNODE_FIELD_NEXT
     %newlist   = load %SortListNode** %newupdate
     br label %loop
 
 insertNode:
-    %nextp     = getelementptr %SortListNode* %node, i32 0, i32 0
+    %nextp     = getelementptr %SortListNode* %node, i32 0, i32 LNODE_FIELD_NEXT
     store %SortListNode* %curNode, %SortListNode** %nextp
     store %SortListNode* %node, %SortListNode** %updatePtr
     ret void
@@ -90,14 +92,14 @@ define i8* @getSortListItem(%SortList* %list)
     br i1 %isBad, label %badSortList, label %checkEmpty
 
 checkEmpty:
-    %listp = getelementptr %SortList* %list, i32 0, i32 0
+    %listp = getelementptr %SortList* %list, i32 0, i32 SLIST_FIELD_FIRST
     %ls    = load %SortListNode** %listp
     %isEmp = icmp eq %SortListNode* %ls, null
     br i1 %isEmp, label %badSortList, label %getFirst
 
 getFirst:
-    %nextp = getelementptr %SortListNode* %ls, i32 0, i32 0
-    %valp  = getelementptr %SortListNode* %ls, i32 0, i32 1
+    %nextp = getelementptr %SortListNode* %ls, i32 0, i32 LNODE_FIELD_NEXT
+    %valp  = getelementptr %SortListNode* %ls, i32 0, i32 LNODE_FIELD_VAL
     %next  = load %SortListNode** %nextp
     store %SortListNode* %next, %SortListNode** %listp
     %val   = load i8** %valp
@@ -118,7 +120,7 @@ badSortList:
     ret i64 0
 
 startLoop:
-    %headp = getelementptr %SortList* %list, i32 0, i32 0
+    %headp = getelementptr %SortList* %list, i32 0, i32 SLIST_FIELD_FIRST
     %head  = load %SortListNode** %headp
     br label %loop
 
@@ -129,7 +131,7 @@ loop:
     br i1 %atend, label %done, label %again
 
 again:
-    %nextp = getelementptr %SortListNode* %curn, i32 0, i32 0
+    %nextp = getelementptr %SortListNode* %curn, i32 0, i32 LNODE_FIELD_NEXT
     %nextv = add i64 %curv, 1
     %nextn = load %SortListNode** %nextp
     br label %loop

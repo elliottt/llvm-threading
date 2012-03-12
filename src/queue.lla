@@ -31,24 +31,24 @@ define void @enqueue(%Queue* %ptr, i8* %val)
     %tempPtr = call i8* @malloc(i64 %size)
     %newNode = bitcast i8* %tempPtr to %QueueNode*
     ; fill in the fields
-    %nextPtr = getelementptr %QueueNode* %newNode, i32 0, i32 0
+    %nextPtr = getelementptr %QueueNode* %newNode, i32 0, i32 NODE_FIELD_NEXT
     store %QueueNode* null, %QueueNode** %nextPtr
-    %valPtr  = getelementptr %QueueNode* %newNode, i32 0, i32 1
+    %valPtr  = getelementptr %QueueNode* %newNode, i32 0, i32 NODE_FIELD_VAL
     store i8* %val, i8** %valPtr
     ; check to see if the list is empty
-    %lastPtrP = getelementptr %Queue* %ptr, i32 0, i32 1
+    %lastPtrP = getelementptr %Queue* %ptr, i32 0, i32 QUEUE_FIELD_LAST
     %lastPtr  = load %QueueNode** %lastPtrP
     %isEmpty  = icmp eq %QueueNode* %lastPtr, null
     br i1 %isEmpty, label %empty, label %append
 
 empty:
     store %QueueNode* %newNode, %QueueNode** %lastPtrP
-    %firstPtrP = getelementptr %Queue* %ptr, i32 0, i32 0
+    %firstPtrP = getelementptr %Queue* %ptr, i32 0, i32 QUEUE_FIELD_FIRST
     store %QueueNode* %newNode, %QueueNode** %firstPtrP
     ret void
 
 append:
-    %lnNextP = getelementptr %QueueNode* %lastPtr, i32 0, i32 0
+    %lnNextP = getelementptr %QueueNode* %lastPtr, i32 0, i32 NODE_FIELD_NEXT
     store %QueueNode* %newNode, %QueueNode** %lnNextP
     store %QueueNode* %newNode, %QueueNode** %lastPtrP
     ret void
@@ -63,7 +63,7 @@ badQueue:
     ret i8* null
 
 goodQueue:
-    %firstPtrP = getelementptr %Queue* %ptr, i32 0, i32 0
+    %firstPtrP = getelementptr %Queue* %ptr, i32 0, i32 QUEUE_FIELD_FIRST
     %firstPtr  = load %QueueNode** %firstPtrP
     %isEmpty   = icmp eq %QueueNode* %firstPtr, null
     br i1 %isEmpty, label %empty, label %remove
@@ -72,8 +72,8 @@ empty:
     ret i8* null
 
 remove:
-    %retvalP   = getelementptr %QueueNode* %firstPtr, i32 0, i32 1
-    %nextPtrP  = getelementptr %QueueNode* %firstPtr, i32 0, i32 0
+    %retvalP   = getelementptr %QueueNode* %firstPtr, i32 0, i32 NODE_FIELD_VAL
+    %nextPtrP  = getelementptr %QueueNode* %firstPtr, i32 0, i32 NODE_FIELD_NEXT
     %retval    = load i8** %retvalP
     %nextPtr   = load %QueueNode** %nextPtrP
     %nodei8    = bitcast %QueueNode* %firstPtr to i8*
@@ -82,20 +82,20 @@ remove:
     br i1 %isOnly, label %singleItem, label %multItems
 
 singleItem:
-    %lastPtrP  = getelementptr %Queue* %ptr, i32 0, i32 1
+    %lastPtrP  = getelementptr %Queue* %ptr, i32 0, i32 QUEUE_FIELD_LAST
     store %QueueNode* null, %QueueNode** %firstPtrP
     store %QueueNode* null, %QueueNode** %lastPtrP
     br label %done
 
 multItems:
     store %QueueNode* %nextPtr, %QueueNode** %firstPtrP
-    %nextnextP = getelementptr %QueueNode* %nextPtr, i32 0, i32 0
+    %nextnextP = getelementptr %QueueNode* %nextPtr, i32 0, i32 NODE_FIELD_NEXT
     %nextnext  = load %QueueNode** %nextnextP
     %isLast    = icmp eq %QueueNode* %nextnext, null
     br i1 %isLast, label %updateLast, label %done
 
 updateLast:
-    %lastPtrP2  = getelementptr %Queue* %ptr, i32 0, i32 1
+    %lastPtrP2  = getelementptr %Queue* %ptr, i32 0, i32 QUEUE_FIELD_LAST
     store %QueueNode* %nextPtr, %QueueNode** %lastPtrP2
     br label %done
 
@@ -112,7 +112,7 @@ badQueue:
     ret i64 0
 
 loopHeader:
-    %firstPtrP = getelementptr %Queue* %ptr, i32 0, i32 0
+    %firstPtrP = getelementptr %Queue* %ptr, i32 0, i32 QUEUE_FIELD_FIRST
     %firstPtr  = load %QueueNode** %firstPtrP
     br label %loop
 
@@ -124,7 +124,7 @@ loop:
 
 advance:
     %nextval   = add i64 %curval, 1
-    %nextnodeP = getelementptr %QueueNode* %curnode, i32 0, i32 0
+    %nextnodeP = getelementptr %QueueNode* %curnode, i32 0, i32 NODE_FIELD_NEXT
     %nextnode  = load %QueueNode** %nextnodeP
     br label %loop
 

@@ -11,14 +11,34 @@
   , i8*     ; --> the bottom of the stack, used for freeing the stack later
   , %Queue* ; --> the people waiting for this thread in order to continue
   }
+
+#define TCB_FIELD_STACK_TOP         0
+#define TCB_FIELD_STACK_BOTTOM      1
+#define TCB_FIELD_JOINED_THREADS    2
+
 %ChanWaiter  = type { %TCB*, i8* }
+
+#define WAITER_FIELD_THREAD         0
+#define WAITER_FIELD_PTR            1
+
 %SleepWaiter = type { %Ticks, %TCB* }
+
+#define SLEEPER_FIELD_WAKEUP        0
+#define SLEEPER_FIELD_THREAD        1
+
 %Channel     = type {
     i8      ; --> State: 0 open, 1 reader waiting, 2 writer waiting
   , %Queue* ; --> Invalid in open state
             ;   | Queue of %TCBs/pointers in reader waiting state
             ;   | Queue of %TCBs in writer waiting state
   }
+
+#define CHANNEL_FIELD_STATE         0
+#define CHANNEL_FIELD_THREADS       1
+
+#define CHANNEL_STATE_OPEN              0
+#define CHANNEL_STATE_READER_WAITING    1
+#define CHANNEL_STATE_WRITER_WAITING    2
 
 %task = type void(i8*)
 
@@ -80,8 +100,8 @@ define private void @run_threaded_system2(%task* %t, i8* %val, i64 %stackSize)
     %s_top   = add i64 %s_int, %stackSize
     %s_topm8 = sub i64 %s_top, STACK_SAFETY_LAYER
     %s_topp  = inttoptr i64 %s_topm8 to %Stack
-    %tcbstt  = getelementptr %TCB* %tcb, i32 0, i32 0 ; stack top ptr loc
-    %tcbstb  = getelementptr %TCB* %tcb, i32 0, i32 1 ; stack bottom ptr loc
+    %tcbstt  = getelementptr %TCB* %tcb, i32 0, i32 TCB_FIELD_STACK_TOP
+    %tcbstb  = getelementptr %TCB* %tcb, i32 0, i32 TCB_FIELD_STACK_BOTTOM
     store i8* %s_topp, %Stack* %tcbstt ; bang in the top of the stack
     store i8* %s, i8** %tcbstb ; bang in the bottom of the stack (for freeing)
     ; go!
@@ -124,8 +144,8 @@ define ccc %TCB* @create_thread(%task* %t, i8* %val, i64 %stackSize)
     %s_top   = add i64 %s_int, %stackSize
     %s_topm8 = sub i64 %s_top, STACK_SAFETY_LAYER
     %s_topp  = inttoptr i64 %s_topm8 to %Stack
-    %tcbstt  = getelementptr %TCB* %tcb, i32 0, i32 0 ; stack top ptr loc
-    %tcbstb  = getelementptr %TCB* %tcb, i32 0, i32 1 ; stack bottom ptr loc
+    %tcbstt  = getelementptr %TCB* %tcb, i32 0, i32 TCB_FIELD_STACK_TOP
+    %tcbstb  = getelementptr %TCB* %tcb, i32 0, i32 TCB_FIELD_STACK_BOTTOM
     store i8* %s_topp, %Stack* %tcbstt ; bang in the top of the stack
     store i8* %s, i8** %tcbstb ; bang in the bottom of the stack (for freeing)
     ; jump to the helper function (below) to save the current thread and switch
@@ -146,7 +166,7 @@ define private void @create_thread2(%task* %t, i8* %val, %TCB* %tcb)
     ; save the stack
     %cur_s   = call %Stack @llvm.stacksave()
     %cur_t   = load %TCB** @current_thread
-    %stackPP = getelementptr %TCB* %cur_t, i32 0, i32 0
+    %stackPP = getelementptr %TCB* %cur_t, i32 0, i32 TCB_FIELD_STACK_TOP
     store %Stack %cur_s, %Stack* %stackPP
     ; add the current thread object to the run queue and reset the current
     ; thread pointer to null
@@ -154,7 +174,7 @@ define private void @create_thread2(%task* %t, i8* %val, %TCB* %tcb)
     call void @enqueueTCB(%Queue* %queue, %TCB* %cur_t)
     ; "restore" the stack and call into the function we want
     store %TCB* %tcb, %TCB** @current_thread
-    %tcpstt  = getelementptr %TCB* %tcb, i32 0, i32 0
+    %tcpstt  = getelementptr %TCB* %tcb, i32 0, i32 TCB_FIELD_STACK_TOP
     %stack   = load %Stack* %tcpstt
     call void @llvm.stackrestore(%Stack %stack)
     call void @start_thread(%task* %t, i8* %val)
@@ -192,7 +212,7 @@ define private void @yield2() naked
     ; get the current stack and bang it into the structure
     %cur_s   = call %Stack @llvm.stacksave()
     %cur_t   = load %TCB** @current_thread
-    %stackPP = getelementptr %TCB* %cur_t, i32 0, i32 0
+    %stackPP = getelementptr %TCB* %cur_t, i32 0, i32 TCB_FIELD_STACK_TOP
     store %Stack %cur_s, %Stack* %stackPP
     ; add the current thread object to the running queue
     %queue   = load %Queue** @running_queue
@@ -254,9 +274,12 @@ define %Channel* @create_channel()
     %szChan  = ptrtoint %Channel* %ptrChan to i64
     %ptr     = call i8* @malloc(i64 %szChan)
     call void @llvm.memset.p0i8.i64(i8* %ptr, i8 0, i64 %szChan, i32 1, i1 0)
-    ; allocate the thread queue and set the pointer
+    ; set the state
     %retval  = bitcast i8* %ptr to %Channel*
-    %qptr    = getelementptr %Channel* %retval, i32 0, i32 1
+    %ptrst   = getelementptr %Channel* %retval, i32 0, i32 CHANNEL_FIELD_STATE
+    store i8 CHANNEL_STATE_OPEN, i8* %ptrst
+    ; allocate the thread queue and set the pointer
+    %qptr    = getelementptr %Channel* %retval, i32 0, i32 CHANNEL_FIELD_THREADS
     %queue   = call %Queue* @newQueue()
     store %Queue* %queue, %Queue** %qptr
     ; return the appropriately-casted value
@@ -283,20 +306,22 @@ define %Channel* @create_channel()
 ;
 define coldcc i32 @send_channel(%Channel* %chan, i8* %val) naked
 {
-    %ptrst = getelementptr %Channel* %chan, i32 0, i32 0
+    %ptrst = getelementptr %Channel* %chan, i32 0, i32 CHANNEL_FIELD_STATE
     %state = load i8* %ptrst
-    switch i8 %state, label %bad_chan [ i8 0, label %no_one_around
-                                        i8 1, label %reader_waiting
-                                        i8 2, label %writer_waiting ]
+    switch i8 %state, label %bad_chan [
+       i8 CHANNEL_STATE_OPEN,           label %no_one_around
+       i8 CHANNEL_STATE_READER_WAITING, label %reader_waiting
+       i8 CHANNEL_STATE_WRITER_WAITING, label %writer_waiting
+    ]
 
 no_one_around:
-    store i8 2, i8* %ptrst ; update the state
+    store i8 CHANNEL_STATE_WRITER_WAITING, i8* %ptrst ; update the state
     call void @addWaiterAndBlock(%Channel* %chan, i8* %val)
     ret i32 0
 
 reader_waiting:
     ; grab the channel wait queue
-    %qptr  = getelementptr %Channel* %chan, i32 0, i32 1
+    %qptr  = getelementptr %Channel* %chan, i32 0, i32 CHANNEL_FIELD_THREADS
     %queue = load %Queue** %qptr
     ; grab the first waiter from the queue
     %first = call i8* @dequeue(%Queue* %queue)
@@ -306,8 +331,8 @@ reader_waiting:
 good_queue:
     ; OK, %first is non-null. Pull the value and the thread.
     %frstw  = bitcast i8* %first to %ChanWaiter*
-    %frsttp = getelementptr %ChanWaiter* %frstw, i32 0, i32 0
-    %frstvp = getelementptr %ChanWaiter* %frstw, i32 0, i32 1
+    %frsttp = getelementptr %ChanWaiter* %frstw, i32 0, i32 WAITER_FIELD_THREAD
+    %frstvp = getelementptr %ChanWaiter* %frstw, i32 0, i32 WAITER_FIELD_PTR
     %thread = load %TCB** %frsttp
     %vali8  = load i8** %frstvp
     %valp   = bitcast i8* %vali8 to i8**
@@ -325,7 +350,7 @@ good_queue:
 
 nowEmpty:
     ; The queue went from reader waiting to empty, so update the state
-    store i8 0, i8* %ptrst
+    store i8 CHANNEL_STATE_OPEN, i8* %ptrst
     ret i32 0
 
 allDone:
@@ -362,14 +387,16 @@ bad_chan:
 ;
 define coldcc i32 @recv_channel(%Channel* %chan, i8** %valp)
 {
-    %ptrst = getelementptr %Channel* %chan, i32 0, i32 0
+    %ptrst = getelementptr %Channel* %chan, i32 0, i32 CHANNEL_FIELD_STATE
     %state = load i8* %ptrst
-    switch i8 %state, label %bad_chan [ i8 0, label %no_one_around
-                                        i8 1, label %reader_waiting
-                                        i8 2, label %writer_waiting ]
+    switch i8 %state, label %bad_chan [
+       i8 CHANNEL_STATE_OPEN,           label %no_one_around
+       i8 CHANNEL_STATE_READER_WAITING, label %reader_waiting
+       i8 CHANNEL_STATE_WRITER_WAITING, label %writer_waiting
+    ]
 
 no_one_around:
-    store i8 1, i8* %ptrst ; update the state
+    store i8 CHANNEL_STATE_READER_WAITING, i8* %ptrst ; update the state
     %valp2 = bitcast i8** %valp to i8*
     call void @addWaiterAndBlock(%Channel* %chan, i8* %valp2)
     ret i32 0
@@ -381,7 +408,7 @@ reader_waiting:
 
 writer_waiting:
     ; grab the channel wait queue
-    %qptr  = getelementptr %Channel* %chan, i32 0, i32 1
+    %qptr  = getelementptr %Channel* %chan, i32 0, i32 CHANNEL_FIELD_THREADS
     %queue = load %Queue** %qptr
     ; grab the first waiter from the queue
     %first = call i8* @dequeue(%Queue* %queue)
@@ -391,8 +418,8 @@ writer_waiting:
 good_queue:
     ; OK, %first is non-null. Pull the value and the thread.
     %frstw  = bitcast i8* %first to %ChanWaiter*
-    %frsttp = getelementptr %ChanWaiter* %frstw, i32 0, i32 0
-    %frstvp = getelementptr %ChanWaiter* %frstw, i32 0, i32 1
+    %frsttp = getelementptr %ChanWaiter* %frstw, i32 0, i32 WAITER_FIELD_THREAD
+    %frstvp = getelementptr %ChanWaiter* %frstw, i32 0, i32 WAITER_FIELD_PTR
     %thread = load %TCB** %frsttp
     %val    = load i8** %frstvp
     ; Free the waiter structure
@@ -409,7 +436,7 @@ good_queue:
 
 nowEmpty:
     ; The queue went from writer waiting to empty, so update the state
-    store i8 0, i8* %ptrst
+    store i8 CHANNEL_STATE_OPEN, i8* %ptrst
     ret i32 0
 
 allDone:
@@ -456,12 +483,12 @@ define coldcc void @thread_join2(%TCB* %thread) naked
     %cur_t  = load %TCB** @current_thread
     ; get the current stack and bang it into the structure
     %cur_s  = call %Stack @llvm.stacksave()
-    %stackp = getelementptr %TCB* %cur_t, i32 0, i32 0
+    %stackp = getelementptr %TCB* %cur_t, i32 0, i32 TCB_FIELD_STACK_TOP
     store %Stack %cur_s, %Stack* %stackp
     ; there is no current thread!
     store %TCB* null, %TCB** @current_thread
     ; get the thread join list and add the formerly-current thread to it
-    %jlptr  = getelementptr %TCB* %thread, i32 0, i32 2
+    %jlptr  = getelementptr %TCB* %thread, i32 0, i32 TCB_FIELD_JOINED_THREADS
     %jlist  = load %Queue** %jlptr
     %tcbptr = bitcast %TCB* %cur_t to i8*
     call void @enqueue(%Queue* %jlist, i8* %tcbptr)
@@ -511,16 +538,16 @@ define coldcc void @sleep2(i64 %microseconds) naked
     %sticks = call %Ticks @microsecondsToTicks(i64 %microseconds)
     %now    = call %Ticks @getTicks()
     %wakeAt = add %Ticks %sticks, %now
-    %watptr = getelementptr %SleepWaiter* %ptrs, i32 0, i32 0
+    %watptr = getelementptr %SleepWaiter* %ptrs, i32 0, i32 SLEEPER_FIELD_WAKEUP
     store %Ticks %wakeAt, %Ticks* %watptr
     ; grab the current thread object and update its stack
     %cur_t  = load %TCB** @current_thread
     %cur_s  = call %Stack @llvm.stacksave()
-    %stackP = getelementptr %TCB* %cur_t, i32 0, i32 0
+    %stackP = getelementptr %TCB* %cur_t, i32 0, i32 TCB_FIELD_STACK_TOP
     store %Stack %cur_s, %Stack* %stackP
     ; save the current thread object into the sleeper, and null out
     ; the current thread pointer.
-    %sltptr = getelementptr %SleepWaiter* %ptrs, i32 0, i32 1
+    %sltptr = getelementptr %SleepWaiter* %ptrs, i32 0, i32 SLEEPER_FIELD_THREAD
     store %TCB* %cur_t, %TCB** %sltptr
     store %TCB* null, %TCB** @current_thread
     ; add ourselves to the sleeping queue
@@ -561,7 +588,7 @@ define private %TCB* @alloc_tcb() {
     ; initialize the join list
     %tcb     = bitcast i8* %ptr to %TCB*
     %jlist   = call %Queue* @newQueue()
-    %jlptr   = getelementptr %TCB* %tcb, i32 0, i32 2
+    %jlptr   = getelementptr %TCB* %tcb, i32 0, i32 TCB_FIELD_JOINED_THREADS
     store %Queue* %jlist, %Queue** %jlptr
     ; return the new TCB
     ret %TCB* %tcb
@@ -573,7 +600,7 @@ define private void @start_thread(%task* %t, i8* %data) noreturn
     call void %t(i8* %data)
     ; hey, we are back. cool. find our join list.
     %cur_t   = load %TCB** @current_thread
-    %jlptr   = getelementptr %TCB* %cur_t, i32 0, i32 2
+    %jlptr   = getelementptr %TCB* %cur_t, i32 0, i32 TCB_FIELD_JOINED_THREADS
     %jlist   = load %Queue** %jlptr
     %rlist   = load %Queue** @running_queue
     br label %unwindJoinList
@@ -591,7 +618,7 @@ cleanup:
     ; cleanup the current thread
     %cur     = load %TCB** @current_thread
     %curi8   = bitcast %TCB* %cur to i8*
-    %stackP  = getelementptr %TCB* %cur, i32 0, i32 1
+    %stackP  = getelementptr %TCB* %cur, i32 0, i32 TCB_FIELD_STACK_BOTTOM
     %stack   = load %Stack* %stackP
     call void @free(i8* %stack)
     call void @free(i8* %curi8)
@@ -621,7 +648,8 @@ emptyRunQueue:
 
 waitForSleepers:
     %nexts   = bitcast i8* %nextsi to %SleepWaiter*
-    %tiltckp = getelementptr %SleepWaiter* %nexts, i32 0, i32 0
+    %tiltckp = getelementptr %SleepWaiter* %nexts, i32 0,
+                             i32 SLEEPER_FIELD_WAKEUP
     %tiltck  = load %Ticks* %tiltckp
     call void @addSortListItem(%SortList* %sleeps, i8* %nextsi)
     call void @sleepUntil(%Ticks %tiltck)
@@ -639,7 +667,7 @@ gotNextThread:
     ; set it as the next thread
     store %TCB* %next, %TCB** @current_thread
     ; restore its stack
-    %stackP  = getelementptr %TCB* %next, i32 0, i32 0
+    %stackP  = getelementptr %TCB* %next, i32 0, i32 TCB_FIELD_STACK_TOP
     %stack   = load %Stack* %stackP
     call void @llvm.stackrestore(%Stack %stack)
     ; return to its caller
@@ -652,7 +680,7 @@ define private void @wakeReadySleepers() alwaysinline
     %now    = call %Ticks @getTicks()
     %sptr   = alloca %SleepWaiter
     %sptri  = bitcast %SleepWaiter* %sptr to i8*
-    %nowp   = getelementptr %SleepWaiter* %sptr, i32 0, i32 0
+    %nowp   = getelementptr %SleepWaiter* %sptr, i32 0, i32 SLEEPER_FIELD_WAKEUP
     store %Ticks %now, %Ticks* %nowp
     ; grab the sleep queue
     %sleeps = load %SortList** @sleeping_queue
@@ -670,7 +698,8 @@ checkWakeTime:
 
 promoteItem:
     %nextp  = bitcast i8* %nextpi to %SleepWaiter*
-    %tcbp   = getelementptr %SleepWaiter* %nextp, i32 0, i32 1
+    %tcbp   = getelementptr %SleepWaiter* %nextp, i32 0,
+                            i32 SLEEPER_FIELD_THREAD
     %tcb    = load %TCB** %tcbp
     %rqueue = load %Queue** @running_queue
     call void @enqueueTCB(%Queue* %rqueue, %TCB* %tcb)
@@ -691,8 +720,8 @@ define private i8* @buildWaitStruct(%TCB* %cur_t, i8* %val)
     %wsz     = ptrtoint %ChanWaiter* %ptr0 to i64
     %ptr1    = call i8* @malloc(i64 %wsz)
     %ptr2    = bitcast i8* %ptr1 to %ChanWaiter*
-    %ptrTCB0 = getelementptr %ChanWaiter* %ptr2, i32 0, i32 0
-    %ptrVal0 = getelementptr %ChanWaiter* %ptr2, i32 0, i32 1
+    %ptrTCB0 = getelementptr %ChanWaiter* %ptr2, i32 0, i32 WAITER_FIELD_THREAD
+    %ptrVal0 = getelementptr %ChanWaiter* %ptr2, i32 0, i32 WAITER_FIELD_PTR
     store %TCB* %cur_t, %TCB** %ptrTCB0
     store i8* %val, i8** %ptrVal0
     ret i8* %ptr1
@@ -728,12 +757,12 @@ define private void @addWaiterAndBlock2(%Channel* %chan, i8* %val)
     %cur_t   = load %TCB** @current_thread
     ; get the current stack and bang it into the structure
     %cur_s   = call %Stack @llvm.stacksave()
-    %stackPP = getelementptr %TCB* %cur_t, i32 0, i32 0
+    %stackPP = getelementptr %TCB* %cur_t, i32 0, i32 TCB_FIELD_STACK_TOP
     store %Stack %cur_s, %Stack* %stackPP
     ; Build a waiting structure
     %wstrct  = call i8* @buildWaitStruct(%TCB* %cur_t, i8* %val)
     ; Get the current wait queue and add ourselves to it
-    %qptr  = getelementptr %Channel* %chan, i32 0, i32 1
+    %qptr  = getelementptr %Channel* %chan, i32 0, i32 CHANNEL_FIELD_THREADS
     %queue = load %Queue** %qptr
     call void @enqueue(%Queue* %queue, i8* %wstrct)
     ; schedule the next action
@@ -745,8 +774,10 @@ define private i8 @compareSleepers(i8* %sleep1i, i8* %sleep2i)
 {
     %sleep1 = bitcast i8* %sleep1i to %SleepWaiter*
     %sleep2 = bitcast i8* %sleep2i to %SleepWaiter*
-    %time1p = getelementptr %SleepWaiter* %sleep1, i32 0, i32 0
-    %time2p = getelementptr %SleepWaiter* %sleep2, i32 0, i32 0
+    %time1p = getelementptr %SleepWaiter* %sleep1, i32 0,
+                            i32 SLEEPER_FIELD_WAKEUP
+    %time2p = getelementptr %SleepWaiter* %sleep2, i32 0,
+                            i32 SLEEPER_FIELD_WAKEUP
     %time1  = load %Ticks* %time1p
     %time2  = load %Ticks* %time2p
     %comp1  = icmp ult %Ticks %time1, %time2
