@@ -31,6 +31,7 @@ test: Test.hs $(LLVM_OBJS)
 
 clean:
 	rm -f *.{o,bc,hi,s,elf} tests/*.{o,bc,s,elf,hi} src/*.{o,bc,s,elf,hi,ll}
+	rm -f include/machine-abi.h
 
 src/queue.ll: include/queue.llh include/system.llh include/llvm.llh
 src/sorted_list.ll: include/sorted_list.llh include/system.llh include/llvm.llh
@@ -38,3 +39,9 @@ src/time.ll: include/time.llh include/system.llh
 src/thread.ll: include/system.llh include/llvm.llh include/queue.llh
 src/thread.ll: include/sorted_list.llh include/time.llh
 src/thread.ll: include/thread.h
+src/thread.ll: include/machine-abi.h
+
+include/machine-abi.h: include/machine-$(shell uname -m).h
+	ln -sf $(<F) $@
+
+
