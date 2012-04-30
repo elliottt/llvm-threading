@@ -1,0 +1,87 @@
+#include "system.llh"
+
+%TimeSpecL     = type { i64, i64 }
+
+%SigInfo       = type [16 x i64]
+%SigSet        = type [16 x i64]
+%ActionHandler = type void(i32, %SigInfo*, i8*)
+%Restorer      = type void()
+%SigAction     = type { %ActionHandler*, %SigSet, i32, %Restorer* } 
+
+declare i32 @gettimeofday(%TimeSpecL*, i8*)
+declare i32 @nanosleep(%TimeSpecL*, %TimeSpecL*)
+declare i32 @setitimer(i32, %TimeSpecL*, %TimeSpecL*)
+declare i32 @sigemptyset(%SigSet*)
+declare i32 @sigaction(i32, %SigAction*, %SigAction*)
+
+define %TimeSpec* @system_time(%TimeSpec* %inRes)
+{
+    %tmp   = alloca %TimeSpecL
+    %res   = call i32 @gettimeofday(%TimeSpecL* %tmp, i8* null)
+    %is0   = icmp eq i32 %res, 0
+    br i1 %is0, label %good, label %bad
+
+good:
+    %ris0  = icmp eq %TimeSpec* %inRes, null
+    br i1 %ris0, label %allocateRetval, label %finish
+
+
+allocateRetval:
+    %presz = getelementptr %TimeSpec* null, i32 1
+    %size  = ptrtoint %TimeSpec* %presz to i64
+    %ptr   = call i8* @malloc(i64 %size)
+    %spec  = bitcast i8* %ptr to %TimeSpec*
+    br label %finish
+
+finish:
+    %retv  = phi %TimeSpec* [%spec, %allocateRetval], [%inRes, %good]
+    %secp  = getelementptr %TimeSpec* %retv, i32 0, TIMESPEC_FIELD_SECS
+    %nsecp = getelementptr %TimeSpec* %retv, i32 0, TIMESPEC_FIELD_NSECS
+    %rsecp = getelementptr %TimeSpecL* %tmp, i32 0, TIMESPEC_FIELD_SECS
+    %ruscp = getelementptr %TimeSpecL* %tmp, i32 0, TIMESPEC_FIELD_NSECS
+
+    %sec   = load i64* %rsecp
+    store i64 %sec, i64* %secp
+
+    %usec  = load i64* %ruscp
+    %nsec  = mul i64 %usec, 1000
+    %nsec3 = trunc i64 %nsec to i32
+    store i32 %nsec3, i32* %nsecp
+
+    ret %TimeSpec* %retv
+
+bad:
+    ret %TimeSpec* null
+}
+
+define void @system_sleepFor(%TimeSpec* %amt)
+{
+intro:
+    %rem    = alloca %TimeSpecL
+    %amtL   = alloca %TimeSpecL
+    %sec1p  = getelementptr %TimeSpec* %amt, i32 0, TIMESPEC_FIELD_SECS
+    %sec2p  = getelementptr %TimeSpecL* %amtL, i32 0, TIMESPEC_FIELD_SECS 
+    %nsec1p = getelementptr %TimeSpec* %amt, i32 0, TIMESPEC_FIELD_NSECS
+    %nsec2p = getelementptr %TimeSpecL* %amtL, i32 0, TIMESPEC_FIELD_NSECS
+    %secs   = load i64* %sec1p
+    %nsecs3 = load i32* %nsec1p
+    %nsecs6 = sext i32 %nsecs3 to i64
+    store i64 %secs, i64* %sec2p
+    store i64 %nsecs6, i64* %nsec2p
+    br label %start
+
+start:
+    %tim = phi %TimeSpecL* [ %amtL, %intro], [%rem, %start]
+    ; make the initial call
+    %res = call i32 @nanosleep(%TimeSpecL* %tim, %TimeSpecL* %rem)
+    %is0 = icmp eq i32 %res, 0
+    br i1 %is0, label %done, label %start
+
+done:
+    ret void
+}
+
+define void @system_run_every(%TimeSpec* %ts, %AlarmCallback* %call)
+{
+    ret void
+}

@@ -2,18 +2,33 @@ LLVM_AS     = llvm-as
 LLASFLAGS   =
 LLC         = llc
 LLCFLAGS    =
-AS          = as
-ASFLAGS     = -g -c
-CC          = gcc
-CFLAGS      = -g -O2 -c -Iinclude/
-LD          = gcc
-LDFLAGS     = -g -lrt
+CC          = clang
+CFLAGS      = -g -c -Iinclude/ -Wall -Werror
+LD          = llvm-ld -native
+LDFLAGS     =
 GHC         = ghc
 GHCFLAGS    =
-CPP         = cpp
-CPPFLAGS    = -Iinclude/
+CPP         = clang -E
+CPPFLAGS    = -Iinclude/ -nostdinc
 
-LLVM_FILES  = queue.lla sorted_list.lla thread.lla time.lla
+ifeq ("$(shell uname -s)","Linux")
+ASFLAGS  += -c
+LDFLAGS  += -lrt
+CPPFLAGS += -DLINUX
+SYSTEM    = Linux
+endif
+
+ifeq ("$(shell uname -s)","Darwin")
+CPPFLAGS += -DDARWIN
+SYSTEM    = Darwin
+endif
+
+ifeq ("$(POSIX)","y")
+CPPFLAGS += -DPOSIX
+SYSTEM    = POSIX
+endif
+
+LLVM_FILES  = queue.lla sorted_list.lla thread.lla system.lla time.lla
 LLVM_FILESP = $(foreach f,$(LLVM_FILES),src/$(f))
 LLVM_OBJS   = $(patsubst %.lla,%.o,$(LLVM_FILESP))
 
@@ -31,9 +46,10 @@ test: Test.hs $(LLVM_OBJS)
 
 clean:
 	rm -f *.{o,bc,hi,s,elf} tests/*.{o,bc,s,elf,hi} src/*.{o,bc,s,elf,hi,ll}
-	rm -f include/machine-abi.h
+	rm -f include/machine-abi.h src/system.lla
 
 src/queue.ll: include/queue.llh include/system.llh include/llvm.llh
+src/queue.ll: include/time.llh
 src/sorted_list.ll: include/sorted_list.llh include/system.llh include/llvm.llh
 src/time.ll: include/time.llh include/system.llh
 src/thread.ll: include/system.llh include/llvm.llh include/queue.llh
@@ -44,4 +60,6 @@ src/thread.ll: include/machine-abi.h
 include/machine-abi.h: include/machine-$(shell uname -m).h
 	ln -sf $(<F) $@
 
+src/system.lla: src/system-$(SYSTEM).lla
+	ln -sf $(<F) $@
 

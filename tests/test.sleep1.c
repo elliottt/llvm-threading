@@ -1,32 +1,34 @@
 #include <stdio.h>
 #include <sys/types.h>
-#include "thread.h"
+#include <thread.h>
 
-int64_t getTicks();
+extern int usleep(long);
 
 void doSomething()
 {
-    sleep(500000); // not part of our system, but handy
+    usleep(1000000); // not part of our system, but handy
 }
 
 void initialThread(void *dead)
 {
-  int64_t a, b, c;
+  TimeSpec a, b, c;
 
-  a = getTicks();
+  system_time(&a);
   doSomething();
-  b = getTicks();
+  system_time(&b);
   doSomething();
-  c = getTicks();
+  system_time(&c);
 
-  if((a <= b) && (b <= c)) {
+  if(compareTime(&a, &b) + compareTime(&b, &c) == -2) {
     printf("PASSED!\n");
   } else {
-    printf("FAILED! (%li, %li, %li)\n", a, b, c);
+    printf("FAILED! (%li:%i, %li:%i, %li:%i, %li, %li)\n", 
+           a.ts_secs, a.ts_usecs, b.ts_secs, b.ts_usecs, c.ts_secs, c.ts_usecs,
+           compareTime(&a, &b), compareTime(&b, &c));
   }
 }
 
-int main(int argc, char argv)
+int main(int argc, char **argv)
 {
     run_threaded_system(initialThread, 0, 10240);
     return 0;

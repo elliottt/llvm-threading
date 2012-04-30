@@ -1,0 +1,43 @@
+#include "system.llh"
+
+declare i32 @gettimeofday(%TimeSpec*, i8*)
+declare i32 @nanosleep(%TimeSpec*, %TimeSpec*)
+
+define %TimeSpec* @system_time()
+{
+    %presz = getelementptr %TimeSpec* null, i32 1
+    %size  = ptrtoint %TimeSpec* %presz to i64
+    %ptr   = call i8* @malloc(i64 %size)
+    %spec  = bitcast i8* %ptr to %TimeSpec*
+    %res   = call i32 @gettimeofday(%TimeSpec* %spec, i8* null)
+    %is0   = icmp eq i32 %res, 0
+    br i1 %is0, label %good, label %bad
+
+good:
+    ret %TimeSpec* %spec
+
+bad:
+    ret %TimeSpec* null
+}
+
+define void @system_sleepFor(%TimeSpec* %amt)
+{
+intro:
+    %rem = alloca %TimeSpec
+    br label %start
+
+start:
+    %tim = phi %TimeSpec* [ %amt, %intro], [%rem, %start]
+    ; make the initial call
+    %res = call i32 @nanosleep(%TimeSpec* %tim, %TimeSpec* %rem)
+    %is0 = icmp eq i32 %res, 0
+    br i1 %is0, label %done, label %start
+
+done:
+    ret void
+}
+
+define void @system_run_every(%TimeSpec* %ts, %AlarmCallback* %call)
+{
+    ret void
+}

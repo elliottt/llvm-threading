@@ -25,8 +25,6 @@ void test2(void *data) {
 
 void initialThread(void *dead)
 {
-    long i = 0;
-
     create_thread(test1, (void*)0, 10240);
     test2((void*)1);
 }

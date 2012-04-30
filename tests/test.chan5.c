@@ -8,7 +8,7 @@ void sender(channel *outchan)
 
   for(i = 0; i < 100; i++) {
       if((err = send_channel(outchan, (void*)i)) != 0) {
-        printf("Failure to send! (%i)\n", err);
+        printf("Failure to send! (%li)\n", err);
       }
   }
 }
@@ -23,10 +23,10 @@ void transfer(dual_channel *chans)
 
     for(i = 0; i < 100; i++) {
         if((err = recv_channel(chans->in, (void**)&val)) != 0) {
-          printf("Failure to receive! (%i)\n", err);
+          printf("Failure to receive! (%li)\n", err);
         } else {
           if((err = send_channel(chans->out, (void*)val)) != 0) {
-            printf("Failure to send! (%i)\n", err);
+            printf("Failure to send! (%li)\n", err);
           }
         }
     }
@@ -39,7 +39,7 @@ void receiver(channel *inchan)
 
   for(i = 0; i < 100; i++) {
       if((err = recv_channel(inchan, &val)) != 0) {
-        printf("Failure to receive! (%i)\n", err);
+        printf("Failure to receive! (%li)\n", err);
       } else {
         printf("Received value %ld\n", (unsigned long)val);
       }

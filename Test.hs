@@ -1,9 +1,15 @@
 {-# LANGUAGE ScopedTypeVariables #-}
+import Control.Applicative
+import Control.Exception hiding (assert)
 import Control.Monad
+import Data.Int
 import Data.List hiding (null)
 import Data.Word
+import Foreign.Marshal.Alloc
 import Foreign.Ptr
-import Prelude hiding (null)
+import Foreign.Storable
+import Prelude hiding (null,LT)
+import System.Time hiding (toClockTime)
 import Test.Framework
 -- import Test.Framework.Runners.Console
 import Test.Framework.Providers.HUnit
@@ -37,6 +43,17 @@ baseTests = [
     , testProperty "Generic add 1 length works" propsl_genericAdd1Len
     , testProperty "Generic remove 1 length works" propsl_generalRem1Len
     , testProperty "Enqueue / dequeue inverts" propsl_enqueueDequeueSorts
+    ],
+    testGroup "Time Functions Tests" [
+      testProperty "Add to 0 works" timeAddTo0Works
+    , testProperty "StandardizeTime works" standardizeTimeWorks
+    , testProperty "AddTime works" addTimeWorks
+    , testProperty "DiffTime works" diffTimeWorks
+    , testProperty "CompareTime works" compareTimeWorks
+    , testProperty "Add builds diff 1" timeAddBuildsDiff1
+    , testProperty "Add builds diff 2" timeAddBuildsDiff2
+    , testProperty "Add builds diff 3" timeAddBuildsDiff3
+    , testProperty "Add builds diff 4" timeAddBuildsDiff4
     ]
   ],
   testGroup "Maybe-Yield Tests" [
@@ -68,7 +85,6 @@ makeTests = do
              ]
   sleepTs <- buildTestGroup "Sleep Tests" [
                buildGoldTest "test.sleep1"
-             , buildGoldTest "test.sleep2"
              , buildGoldTest "test.sleep3"
              , buildGoldTest "test.sleep4"
              ]
@@ -303,6 +319,208 @@ foreign import ccall unsafe "slist.h getSortListLength"
 
 foreign import ccall unsafe "slist.h freeSortList"
   slFreeList' :: Ptr SortedList -> IO ()
+
+-- ----------------------------------------------------------------------------
+--
+-- Time-Based Properties
+--
+-- ----------------------------------------------------------------------------
+
+data LibraryTime = LT Int64 Int32
+ deriving Show
+
+instance Arbitrary LibraryTime where
+    arbitrary = do secs <- arbitrary
+                   nsecs <- arbitrary
+                   let nsecs' = (nsecs `mod` 1000000000) * signum nsecs
+                   if signum secs + fromIntegral (signum nsecs') == 0
+                     then return (LT secs (negate nsecs'))
+                     else return (LT secs nsecs')
+
+instance Eq LibraryTime where
+    (LT a b) == (LT c d) = (a == c) && (b == d)
+
+instance Storable LibraryTime where
+    sizeOf _          = 12
+    alignment _       = 1
+    peek ptr          = do secs  <- peek (castPtr ptr)
+                           nsecs <- peek (castPtr (ptr `plusPtr` 8))
+                           return (LT secs nsecs)
+    poke ptr (LT a b) = do poke (castPtr ptr) a
+                           poke (castPtr $ ptr `plusPtr` 8) b
+
+invertTime :: LibraryTime -> LibraryTime
+invertTime (LT a b) = LT (-a) (-b)
+
+toClockTime :: LibraryTime -> ClockTime
+toClockTime (LT sec nsec) = 
+    case trace ("psec': " ++ show psec') () of
+      () | psec' < 0 -> TOD (sec' - 1) (1000000000000 + psec')
+         | otherwise -> TOD sec' psec'
+ where
+  sec'  = fromIntegral sec
+  psec' = (fromIntegral nsec :: Integer) * 1000
+
+fromClockTime :: ClockTime -> LibraryTime
+fromClockTime (TOD sec psec) = LT sec' nsec'
+ where
+  sec'  = fromIntegral sec
+  nsec' = fromIntegral (psec `div` 1000)
+
+cleanLibraryTime :: LibraryTime -> LibraryTime
+cleanLibraryTime = fromClockTime . toClockTime
+
+cleanClockTime :: ClockTime -> ClockTime
+cleanClockTime = toClockTime . fromClockTime
+
+timeAddTo0Works :: LibraryTime -> Property
+timeAddTo0Works time = monadicIO $ do
+  res <- run $ addTime' time (LT 0 0)
+  assert (res == time)
+
+timeAddBuildsDiff1 :: LibraryTime -> LibraryTime -> Property
+timeAddBuildsDiff1 time1 time2 = monadicIO $ do
+  diff <- run $ do sum <- addTime' time1 time2
+                   diffTime' time1 sum
+  assert (diff == invertTime time2)
+
+timeAddBuildsDiff2 :: LibraryTime -> LibraryTime -> Property
+timeAddBuildsDiff2 time1 time2 = monadicIO $ do
+  diff <- run $ do sum <- addTime' time1 time2
+                   diffTime' time2 sum
+  assert (diff == invertTime time1)
+
+timeAddBuildsDiff3 :: LibraryTime -> LibraryTime -> Property
+timeAddBuildsDiff3 time1 time2 = monadicIO $ do
+  diff <- run $ do sum <- addTime' time1 time2
+                   diffTime' sum time1
+  assert (diff == time2)
+
+timeAddBuildsDiff4 :: LibraryTime -> LibraryTime -> Property
+timeAddBuildsDiff4 time1 time2 = monadicIO $ do
+  diff <- run $ do sum <- addTime' time1 time2
+                   diffTime' sum time2
+  assert (diff == time1)
+
+
+-- ----------------------------------
+
+standardizeTimeWorks :: LibraryTime -> Property
+standardizeTimeWorks x = monadicIO $ do
+  shouldBe <- run $ standardizeTimeSpec x
+  implIs   <- run $ standardizeTime x
+  assert (shouldBe == implIs)
+
+standardizeTimeSpec :: LibraryTime -> IO LibraryTime
+standardizeTimeSpec x@(LT sec nsec)
+  | nsec >= 1000000000      =
+      standardizeTimeSpec (LT (sec + 1) (nsec - 1000000000))
+  | nsec <= (-1000000000)   =
+      standardizeTimeSpec (LT (sec - 1) (nsec + 1000000000))
+  -- if sec is -5 and nsec is 5000, then we're really -4 and nsec (10^9 - 5000) 
+  | (sec < 0) && (nsec > 0) =   
+      standardizeTimeSpec (LT (sec + 1) (nsec - 1000000000))
+  -- if sec is 5 and sec is -5000, then we're really 4 and nsec (10^9 - 5000)
+  | (sec > 0) && (nsec < 0) =
+      standardizeTimeSpec (LT (sec - 1) (1000000000 + nsec))
+  | otherwise               =
+      return x
+
+standardizeTime :: LibraryTime -> IO LibraryTime
+standardizeTime x =
+  alloca $ \ ptr -> do
+    poke ptr x
+    standardTime ptr
+    peek ptr
+
+foreign import ccall unsafe "time.h standardizeTime"
+  standardTime :: Ptr LibraryTime ->  IO ()
+
+-- ----------------------------------
+
+addTimeWorks :: LibraryTime -> LibraryTime -> Property
+addTimeWorks x y = monadicIO $ do
+  shouldBe <- run $ addTimeSpec x y
+  implIs   <- run $ addTime' x y
+  assert (shouldBe == implIs)
+
+addTimeSpec :: LibraryTime -> LibraryTime -> IO LibraryTime
+addTimeSpec x y = do
+  x'@(LT xsec xnsec) <- standardizeTime x
+  y'@(LT ysec ynsec) <- standardizeTime y
+  let base = LT (xsec + ysec) (xnsec + ynsec)
+  res <- standardizeTime base
+  return res
+
+addTime' :: LibraryTime -> LibraryTime -> IO LibraryTime
+addTime' x y =
+  alloca $ \ ptrx ->
+    alloca $ \ ptry ->
+      alloca $ \ ptrz -> do
+        poke ptrx x
+        poke ptry y
+        _ <- addTime ptrx ptry ptrz
+        peek ptrz
+
+foreign import ccall unsafe "time.h addTime"
+  addTime :: Ptr LibraryTime -> Ptr LibraryTime ->
+             Ptr LibraryTime -> IO (Ptr LibraryTime)
+
+-- ----------------------------------
+
+diffTimeWorks :: LibraryTime -> LibraryTime -> Property
+diffTimeWorks x y = monadicIO $ do
+  shouldBe <- run $ diffTimeSpec x y
+  implIs   <- run $ diffTime' x y
+  assert (shouldBe == implIs)
+
+diffTimeSpec :: LibraryTime -> LibraryTime -> IO LibraryTime
+diffTimeSpec x y = do
+  x'@(LT xsec xnsec) <- standardizeTime x
+  y'@(LT ysec ynsec) <- standardizeTime y
+  standardizeTime $ LT (xsec - ysec) (xnsec - ynsec)
+
+diffTime' :: LibraryTime -> LibraryTime -> IO LibraryTime
+diffTime' x y =
+  alloca $ \ ptrx ->
+    alloca $ \ ptry ->
+      alloca $ \ ptrz -> do
+        poke ptrx x
+        poke ptry y
+        diffTime ptrx ptry ptrz
+        peek ptrz
+
+foreign import ccall unsafe "time.h diffTime"
+  diffTime :: Ptr LibraryTime -> Ptr LibraryTime ->
+              Ptr LibraryTime -> IO (Ptr LibraryTime)
+
+-- ----------------------------------
+
+compareTimeWorks :: LibraryTime -> LibraryTime -> Property
+compareTimeWorks x y = monadicIO $ do
+  let shouldBe = compareTimeSpec x y
+  implIs <- run $ compareTime' x y
+  assert (shouldBe == implIs)
+
+compareTimeSpec :: LibraryTime -> LibraryTime -> Int64
+compareTimeSpec (LT sec1 nsec1) (LT sec2 nsec2) =
+  case () of
+    () | sec1  > sec2  -> 1
+       | sec1  < sec2  -> -1
+       | nsec1 > nsec2 -> 1
+       | nsec1 < nsec2 -> -1
+       | otherwise     -> 0
+
+compareTime' :: LibraryTime -> LibraryTime -> IO Int64
+compareTime' x y =
+  alloca $ \ ptrx ->
+    alloca $ \ ptry -> do
+      poke ptrx x
+      poke ptry y
+      compareTime ptrx ptry
+
+foreign import ccall unsafe "time.h compareTime"
+  compareTime :: Ptr LibraryTime -> Ptr LibraryTime -> IO Int64
 
 -- --------------------------------------------------------------------------
 --

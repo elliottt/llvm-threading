@@ -26,6 +26,22 @@ extern channel *create_channel();
 extern int send_channel(channel*, void *data);
 extern int recv_channel(channel*, void **data);
 
+typedef struct TimeSpec {
+  int64_t ts_secs;
+  int32_t ts_usecs;
+} TimeSpec;
+
+extern void      standardizeTime(TimeSpec*);
+extern TimeSpec* addTime(TimeSpec*, TimeSpec*, TimeSpec*);
+extern int64_t   compareTime(TimeSpec*, TimeSpec*);
+extern TimeSpec* diffTime(TimeSpec*, TimeSpec*, TimeSpec*);
+
+typedef void (AlarmCallback)();
+
+extern TimeSpec* system_time(TimeSpec*);
+extern void      system_sleepFor(TimeSpec*);
+extern void      system_run_every(TimeSpec*, AlarmCallback*);
+
 #ifdef __cplusplus
 }
 #endif

@@ -1,29 +1,39 @@
 #include <stdio.h>
 #include <sys/types.h>
-#include <unistd.h>
+#include <thread.h>
 
-int64_t getTicks();
+int usleep(long);
+
+struct time {
+  int64_t tv_sec;
+  int32_t tv_nsec;
+};
 
 void doSomething()
 {
     usleep(500000); // not part of our system, but handy
 }
 
-int main(int argc, char argv)
+int main(int argc, char **argv)
 {
-  int64_t a, b, c;
+  TimeSpec a, b, c;
+  long long diff1, diff2;
 
-  a = getTicks();
+  system_time(&a);
   doSomething();
-  b = getTicks();
+  system_time(&b);
   doSomething();
-  c = getTicks();
+  system_time(&c);
 
-  if((a <= b) && (b <= c)) {
+  diff1 = compareTime(&a, &b);
+  diff2 = compareTime(&b, &c);
+
+  if((diff1 <= 0) && (diff2 <= 0)) {
     printf("PASSED!\n");
     return 0;
   } else {
-    printf("FAILED! (%li, %li, %li)\n", a, b, c);
+    printf("FAILED! (%li:%i, %li:%i, %li:%i)\n",
+           a.ts_secs, a.ts_usecs, b.ts_secs, b.ts_usecs, c.ts_secs, c.ts_usecs);
     return -1;
   }
 }

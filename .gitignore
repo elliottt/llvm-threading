@@ -3,6 +3,7 @@
 *.o
 *.elf
 *.hi
+*.bc
 test
 src/*.ll
 include/machine-abi.h

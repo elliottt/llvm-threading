@@ -34,8 +34,6 @@ void test3(void *data) {
 
 void initThread(void *dead)
 {
-    long i = 0;
-
     create_thread(test1, (void*)0, 10240);
     create_thread(test2, (void*)0, 10240);
     test3((void*)1);

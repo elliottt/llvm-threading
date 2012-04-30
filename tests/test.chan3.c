@@ -10,7 +10,7 @@ void sender(void *dead)
 
   for(i = 0; i < 10; i++) {
       if((err = send_channel(chan, (void*)i)) != 0) {
-        printf("Failure to send! (%i)\n", err);
+        printf("Failure to send! (%li)\n", err);
       }
   }
 }
@@ -22,11 +22,12 @@ void receiver(void *dead)
 
   for(i = 0; i < 10; i++) {
       if((err = recv_channel(chan, &val)) != 0) {
-        printf("Failure to receive! (%i)\n", err);
+        printf("Failure to receive! (%li)\n", err);
       } else {
         printf("Received value 0x%lx\n", (unsigned long)val);
       }
-      if((unsigned long)val != i) printf("Bad value! (%i!=%i)\n",val,i);
+      if((unsigned long)val != i)
+        printf("Bad value! (%li!=%li)\n",(unsigned long)val,i);
   }
 }
 

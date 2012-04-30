@@ -11,7 +11,7 @@ echo-cmd = $(if $($(quiet)cmd_$(1)), echo "  $($(quiet)cmd_$(1))";)
 cmd      = @$(echo-cmd) $(cmd_$(1))
 
 # lla -> ll
-cmd_lla_to_ll       = $(CPP) -P $(CPPFLAGS) $< > $@
+cmd_lla_to_ll       = $(CPP) -P $(CPPFLAGS) - < $< > $@
 quiet_cmd_lla_to_ll = CPP     $(notdir $@)
 %.ll: %.lla
 	$(call cmd,lla_to_ll)
@@ -22,17 +22,17 @@ quiet_cmd_ll_to_bc  = LLVM_AS $(notdir $@)
 %.bc: %.ll
 	$(call cmd,ll_to_bc)
 
-# bc -> s
-cmd_bc_to_s         = $(LLC) $(LLCFLAGS) -o $@ $<
-quiet_cmd_bc_to_s   = LLC     $(notdir $@)
-%.s: %.bc
-	$(call cmd,bc_to_s)
+# bc -> o
+cmd_bc_to_o         = $(LLC) $(LLCFLAGS) -filetype=obj -o $@ $<
+quiet_cmd_bc_to_o   = LLC     $(notdir $@)
+%.o: %.bc
+	$(call cmd,bc_to_o)
 
-# s -> o
-cmd_s_to_o          = $(AS) $(ASFLAGS) -o $@ $<
-quiet_cmd_s_to_o    = AS      $(notdir $@)
-%.o: %.s
-	$(call cmd,s_to_o)
+## s -> o
+#cmd_s_to_o          = $(AS) $(ASFLAGS) -o $@ $<
+#quiet_cmd_s_to_o    = AS      $(notdir $@)
+#%.o: %.s
+#	$(call cmd,s_to_o)
 
 # c -> o
 cmd_c_to_o          = $(CC) $(CFLAGS) -o $@ $<

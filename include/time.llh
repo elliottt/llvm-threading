@@ -1,16 +1,35 @@
 #ifndef TIME_LLH
 #define TIME_LLH
 
+%TimeSpec = type { i64, i32 }
+#define TIMESPEC_FIELD_SECS     i32 0
+#define TIMESPEC_FIELD_NSECS    i32 1
 
-%Ticks     = type i64
+; INPUT: A pointer to a TimeSpec that should be standardized to meet normal
+;        operating conventions.
+; OUTPUT: None
+; SIDE EFFECTS: The input TimeSpec will be overwritten with better values.
+declare ccc void       @standardizeTime(%TimeSpec*)
 
-declare %Ticks @microsecondsToTicks(i64 %microseconds)
-declare i64    @ticksToMicroseconds(%Ticks %ticks)
-declare %Ticks @secondsToTicks(i64 %seconds)
-declare %Ticks @timespecToTicks(%TimeSpec* %tval)
-declare void   @ticksToTimespec(%Ticks %ticks, %TimeSpec* %tval)
-declare %Ticks @getTicks()
-declare void   @sleepFor(%Ticks %ticks)
-declare void   @sleepUntil(%Ticks %ticks)
+; INPUT: A base time, a time to add, and (optionally) a pointer to the result
+;        structure.
+; OUTPUT: The result of adding the first two times.
+; SIDE EFFECTS: If you pass in a pointer as the third argument, its fields
+;               will be replaced with the resulting values, and it will be
+;               returned. If you pass NULL as the third argument, the result
+;               structure will be allocated for you.
+declare ccc %TimeSpec* @addTime(%TimeSpec*, %TimeSpec*, %TimeSpec*)
+
+; INPUT: Two times to compare.
+; OUTPUT: 1 if the first item is greater than the second, 0 if the first item
+;         is equal to the second, or -1 if the first item is less than the
+;         second.
+declare ccc i64        @compareTime(%TimeSpec*, %TimeSpec*)
+
+; INPUT: Two times, a and b, and (optionally) a pointer to a structure to put
+;        the result of (a - b). Like addTime, if you do not provide a pointer
+;        as the third argument, one will be allocated for you.
+; OUTPUT: a - b
+declare ccc %TimeSpec* @diffTime(%TimeSpec*, %TimeSpec*, %TimeSpec*)
 
 #endif

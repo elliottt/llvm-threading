@@ -2,9 +2,12 @@
 #include "llvm.llh"
 #include "queue.llh"
 #include "sorted_list.llh"
-#include "time.llh"
+#include "system.llh"
 
 #include "machine-abi.h"
+
+; 20,000,000 nanoseconds is 20 milliseconds
+@.TimeSlice = internal constant %TimeSpec { i64 0, i32 20000000 }
 
 #define STACK_SAFETY_LAYER 128
 
@@ -23,7 +26,7 @@
 #define WAITER_FIELD_THREAD         0
 #define WAITER_FIELD_PTR            1
 
-%SleepWaiter = type { %Ticks, %TCB* }
+%SleepWaiter = type { %TimeSpec*, %TCB* }
 
 #define SLEEPER_FIELD_WAKEUP        0
 #define SLEEPER_FIELD_THREAD        1
@@ -46,7 +49,7 @@
 
 @running_queue  = internal global %Queue*    null
 @sleeping_queue = internal global %SortList* null
-@change_thrs_at = internal global %Ticks     0
+@change_thrs_at = internal global %TimeSpec* null
 @current_thread = internal global %TCB*      null
 @original_stack = internal global %Stack     null
 
@@ -68,6 +71,7 @@ define coldcc void @run_threaded_system(%task* %t, i8* %val, i64 %stackSize)
     ret void
 }
 
+
 define private void @run_threaded_system2(%task* %t, i8* %val, i64 %stackSize)
    naked
 {
@@ -80,9 +84,11 @@ define private void @run_threaded_system2(%task* %t, i8* %val, i64 %stackSize)
     %squeue   = call %SortList* @newSortedList(%Comparator* @compareSleepers)
     store %SortList* %squeue, %SortList** @sleeping_queue
     ; initialize the time to change threads
-    %now      = call %Ticks @getTicks()
-    %switchAt = add %Ticks %now, TICKS_PER_TIMESLICE
-    store %Ticks %switchAt, %Ticks* @change_thrs_at
+    %now      = alloca %TimeSpec
+    %dead     = call %TimeSpec* @system_time(%TimeSpec* %now)
+    %switchAt = call %TimeSpec* @addTime(%TimeSpec* %now,%TimeSpec* @.TimeSlice,
+                                         %TimeSpec* null)
+    store %TimeSpec* %switchAt, %TimeSpec** @change_thrs_at
     ; initialize the current thread to nil for now.
     store %TCB* null, %TCB** @current_thread
     ; create the initial thread
@@ -201,15 +207,20 @@ define private void @yield2() naked
 ;      time slice.
 define coldcc void @maybeYield()
 {
-    %now      = call %Ticks @getTicks()
-    %switchAt = load %Ticks* @change_thrs_at
-    %switch   = icmp uge %Ticks %now, %switchAt
+    %now      = alloca %TimeSpec
+    %dead0    = call %TimeSpec* @system_time(%TimeSpec* %now)
+    %switchAt = load %TimeSpec** @change_thrs_at
+    %compare  = call i64 @compareTime(%TimeSpec* %now, %TimeSpec* %switchAt)
+    %switch   = icmp sge i64 %compare, 0
     br i1 %switch, label %shouldReschedule, label %keepGoing
 
 shouldReschedule:
     ; OK, recompute when to switch
-    %newSwtch = add %Ticks %now, TICKS_PER_TIMESLICE
-    store %Ticks %newSwtch, %Ticks* @change_thrs_at
+    %fptr     = bitcast %TimeSpec* %switchAt to i8*
+    %newSwtch = load %TimeSpec** @change_thrs_at
+    %dead1    = call %TimeSpec* @addTime(%TimeSpec* %now,
+                                         %TimeSpec* @.TimeSlice,
+                                         %TimeSpec* %newSwtch)
     ; run the yield
     %cur_t   = load %TCB** @current_thread
     SAVE_CALLEE_SAVE_REGISTERS()
@@ -473,11 +484,21 @@ define coldcc void @sleep2(i64 %microseconds) naked
     %ptr    = call i8* @malloc(i64 %szsl)
     %ptrs   = bitcast i8* %ptr to %SleepWaiter*
     ; find the time to wake up and store it in the structure
-    %sticks = call %Ticks @microsecondsToTicks(i64 %microseconds)
-    %now    = call %Ticks @getTicks()
-    %wakeAt = add %Ticks %sticks, %now
+    %secs   = sdiv i64 %microseconds, 1000000 ; 1,000,000 microseconds/second
+    %msecr  = srem i64 %microseconds, 1000000
+    %nsecs6 = mul i64 %msecr, 1000 ; 1000 nanoseconds / microsecond
+    %nsecs  = trunc i64 %nsecs6 to i32
+    %aspec  = alloca %TimeSpec
+    %as_sp  = getelementptr %TimeSpec* %aspec, i32 0, TIMESPEC_FIELD_SECS
+    %as_nsp = getelementptr %TimeSpec* %aspec, i32 0, TIMESPEC_FIELD_NSECS
+    store i64 %secs, i64* %as_sp
+    store i32 %nsecs, i32* %as_nsp
+    %now    = alloca %TimeSpec
+    %dead0  = call %TimeSpec* @system_time(%TimeSpec* %now)
     %watptr = getelementptr %SleepWaiter* %ptrs, i32 0, i32 SLEEPER_FIELD_WAKEUP
-    store %Ticks %wakeAt, %Ticks* %watptr
+    %wakeAt = call %TimeSpec* @addTime(%TimeSpec* %now, %TimeSpec* %aspec,
+                                       %TimeSpec* null)
+    store %TimeSpec* %wakeAt, %TimeSpec** %watptr
     ; grab the current thread object and update its stack
     %cur_t  = load %TCB** @current_thread
     %cur_s  = call %Stack @llvm.stacksave()
@@ -568,6 +589,7 @@ cleanup:
 define private void @schedule() naked
 {
     %queue   = load %Queue** @running_queue
+    %tmptime = alloca %TimeSpec
     br label %start
 
 start:
@@ -585,12 +607,15 @@ emptyRunQueue:
     br i1 %nosls, label %emptySleepQueue, label %waitForSleepers
 
 waitForSleepers:
-    %nexts   = bitcast i8* %nextsi to %SleepWaiter*
-    %tiltckp = getelementptr %SleepWaiter* %nexts, i32 0,
-                             i32 SLEEPER_FIELD_WAKEUP
-    %tiltck  = load %Ticks* %tiltckp
+    %nxts = bitcast i8* %nextsi to %SleepWaiter*
+    %tilp = getelementptr %SleepWaiter* %nxts, i32 0, i32 SLEEPER_FIELD_WAKEUP
+    %til  = load %TimeSpec** %tilp
+    %now  = alloca %TimeSpec
+    %ded0 = call %TimeSpec* @system_time(%TimeSpec* %now)
+    %rtim = call %TimeSpec* @diffTime(%TimeSpec* %til, %TimeSpec* %now,
+                                      %TimeSpec* %tmptime)
     call void @addSortListItem(%SortList* %sleeps, i8* %nextsi)
-    call void @sleepUntil(%Ticks %tiltck)
+    call void @system_sleepFor(%TimeSpec* %rtim)
     br label %start ; do this, because there may be more than one thread to
                     ; wake up, or because we might have returned early due
                     ; to a signal.
@@ -615,11 +640,12 @@ gotNextThread:
 define private void @wakeReadySleepers() alwaysinline
 {
     ; create a new SleepWaiter with the current time and a junk TCB
-    %now    = call %Ticks @getTicks()
+    %now    = alloca %TimeSpec
+    %_      = call %TimeSpec* @system_time(%TimeSpec* %now)
     %sptr   = alloca %SleepWaiter
     %sptri  = bitcast %SleepWaiter* %sptr to i8*
     %nowp   = getelementptr %SleepWaiter* %sptr, i32 0, i32 SLEEPER_FIELD_WAKEUP
-    store %Ticks %now, %Ticks* %nowp
+    store %TimeSpec* %now, %TimeSpec** %nowp
     ; grab the sleep queue
     %sleeps = load %SortList** @sleeping_queue
     br label %pullLoop
@@ -699,23 +725,13 @@ define private void @addWaiterAndBlock2(%Channel* %chan, i8* %val)
 
 define private i8 @compareSleepers(i8* %sleep1i, i8* %sleep2i)
 {
-    %sleep1 = bitcast i8* %sleep1i to %SleepWaiter*
-    %sleep2 = bitcast i8* %sleep2i to %SleepWaiter*
-    %time1p = getelementptr %SleepWaiter* %sleep1, i32 0,
-                            i32 SLEEPER_FIELD_WAKEUP
-    %time2p = getelementptr %SleepWaiter* %sleep2, i32 0,
-                            i32 SLEEPER_FIELD_WAKEUP
-    %time1  = load %Ticks* %time1p
-    %time2  = load %Ticks* %time2p
-    %comp1  = icmp ult %Ticks %time1, %time2
-    br i1 %comp1, label %lesst, label %greaterequal
-lesst:
-    ret i8 -1
-greaterequal:
-    %comp2  = icmp eq %Ticks %time1, %time2
-    br i1 %comp2, label %equal, label %greater
-equal:
-    ret i8 0
-greater:
-    ret i8 1
+    %slp1 = bitcast i8* %sleep1i to %SleepWaiter*
+    %slp2 = bitcast i8* %sleep2i to %SleepWaiter*
+    %tm1p = getelementptr %SleepWaiter* %slp1, i32 0, i32 SLEEPER_FIELD_WAKEUP
+    %tm2p = getelementptr %SleepWaiter* %slp2, i32 0, i32 SLEEPER_FIELD_WAKEUP
+    %tm1  = load %TimeSpec** %tm1p
+    %tm2  = load %TimeSpec** %tm2p
+    %cmp  = call i64 @compareTime(%TimeSpec* %tm1, %TimeSpec* %tm2)
+    %cmp8 = trunc i64 %cmp to i8
+    ret i8 %cmp8
 }

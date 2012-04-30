@@ -1,23 +1,28 @@
+; This file contains the primitives that must be provided by the underlying
+; system in order for the rest of the system to work.
 #ifndef SYSTEM_LLH
 #define SYSTEM_LLH
 
-; 2^6 microseconds per tick = 64 microseconds per tick.
-#define MICROSECONDS_TO_TICKS_SHIFT 6
-; 300 ticks per timeslice = 19,200 microseconds per timeslice.
-; (as a comparison, I believe GHC defaults to 20 milliseconds,
-; or 20,000 microseconds, per timeslice.)
-#define TICKS_PER_TIMESLICE 300
+#include "time.llh"
 
-%TimeT     = type i64
-%TimeSpec  = type { %TimeT, %TimeT }
-
-declare i8*  @malloc(i64)
+; We must have a malloc and free implementation that works as per normal.
+declare i8* @malloc(i64)
 declare void @free(i8*)
 
-declare i64  @clock_gettime(i32, %TimeSpec*)
-declare i32  @clock_nanosleep(i32, i32, %TimeSpec*, %TimeSpec*)
-
+; Similarly, we must have a way to print some stuff, and a way to quit
+; immediately.
 declare i32  @printf(i8* noalias nocapture, ...)
 declare void @exit(i32) noreturn
+
+%AlarmCallback = type void()
+
+; Finally, the system must have a way of representing time, setting timers,
+; and getting the current time.
+
+; If the input TimeSpec* is NULL, a new TimeSpec should be allocated.
+; Otherwise, it should be used as the result pointer (and returned as such)
+declare %TimeSpec* @system_time(%TimeSpec*)
+declare void @system_sleepFor(%TimeSpec*)
+declare void @system_run_every(%TimeSpec*, %AlarmCallback*)
 
 #endif

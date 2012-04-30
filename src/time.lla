@@ -1,163 +1,201 @@
 #include "system.llh"
 #include "time.llh"
 
-;
-; A tick is 64 microseconds. log_2 64 = 6
-;
-
-define %Ticks @microsecondsToTicks(i64 %microseconds)
+; INPUT: A pointer to a TimeSpec that should be standardized to meet normal
+;        operating conventions.
+; OUTPUT: None
+; SIDE EFFECTS: The input TimeSpec will be overwritten with better values.
+define void @standardizeTime(%TimeSpec* %time)
 {
-    %res = ashr i64 %microseconds, MICROSECONDS_TO_TICKS_SHIFT
-    ret %Ticks %res
-}
+    %secp  = getelementptr %TimeSpec* %time, i32 0, TIMESPEC_FIELD_SECS
+    %nsecp = getelementptr %TimeSpec* %time, i32 0, TIMESPEC_FIELD_NSECS
+    br label %start
 
-define i64 @ticksToMicroseconds(%Ticks %ticks)
-{
-    %res = shl i64 %ticks, MICROSECONDS_TO_TICKS_SHIFT
-    ret i64 %res
-}
-
-define %Ticks @secondsToTicks(i64 %seconds)
-{
-    %msecs = mul i64 %seconds, 1000000
-    %res   = call i64 @microsecondsToTicks(i64 %msecs)
-    ret i64 %res
-}
-
-define %Ticks @timespecToTicks(%TimeSpec* %tval)
-{
-    %secp  = getelementptr %TimeSpec* %tval, i32 0, i32 0
-    %nsecp = getelementptr %TimeSpec* %tval, i32 0, i32 1
+start:
+    %nsecs = load i32* %nsecp
     %secs  = load i64* %secp
-    %nsecs = load i64* %nsecp
-    %usecs = sdiv i64 %nsecs, 1000
-    %val1  = call %Ticks @secondsToTicks(i64 %secs)
-    %val2  = call %Ticks @microsecondsToTicks(i64 %usecs)
-    %res   = add %Ticks %val1, %val2
-    ret i64 %res
-}
+    %tooBg = icmp sge i32 %nsecs, 1000000000
+    br i1 %tooBg, label %nsecTooBig, label %continue1
 
-define void @ticksToTimespec(%Ticks %ticks, %TimeSpec* %tval)
-{
-    %secp  = getelementptr %TimeSpec* %tval, i32 0, i32 0
-    %nsecp = getelementptr %TimeSpec* %tval, i32 0, i32 1
-    %usecs = call i64 @ticksToMicroseconds(%Ticks %ticks)
-    %nsecs = mul i64 %usecs, 1000
-    %sec   = sdiv i64 %nsecs, 1000000000
-    %nsec  = srem i64 %nsecs, 1000000000
-    store i64 %sec, i64* %secp
-    store i64 %nsec, i64* %nsecp
+continue1:
+    %tooSm = icmp sle i32 %nsecs, -1000000000
+    br i1 %tooSm, label %nsecTooSmall, label %continue2
+
+continue2:
+    %slt0  = icmp slt i64 %secs, 0
+    %ngt0  = icmp sgt i32 %nsecs, 0
+    %isNP  = and i1 %slt0, %ngt0
+    br i1 %isNP, label %caseNP, label %continue3
+
+continue3:
+    %sgt0  = icmp sgt i64 %secs, 0
+    %nlt0  = icmp slt i32 %nsecs, 0
+    %isPN  = and i1 %sgt0, %nlt0
+    br i1 %isPN, label %casePN, label %everythingOK
+
+everythingOK:
     ret void
+
+nsecTooBig:
+; | nsec >= 1000000000      = standardizeTime (LT (sec + 1) (nsec - 1000000000))
+    %s0    = add i64 %secs, 1
+    %ns0   = sub i32 %nsecs, 1000000000
+    store i64 %s0, i64* %secp
+    store i32 %ns0, i32* %nsecp
+    br label %start
+
+nsecTooSmall:
+; | nsec <= (-1000000000)   = standardizeTime (LT (sec - 1) (nsec + 1000000000))
+    %s1    = sub i64 %secs, 1
+    %ns1   = add i32 %nsecs, 1000000000
+    store i64 %s1, i64* %secp
+    store i32 %ns1, i32* %nsecp
+    br label %start
+
+caseNP:
+; | (sec < 0) && (nsec > 0) = standardizeTime (LT (sec + 1) (nsec - 1000000000))
+    %s2    = add i64 %secs, 1
+    %ns2   = sub i32 %nsecs, 1000000000
+    store i64 %s2, i64* %secp
+    store i32 %ns2, i32* %nsecp
+    br label %start
+
+casePN:
+; | (sec > 0) && (nsec < 0) = standardizeTime (LT (sec - 1) (1000000000 + nsec))
+    %s3    = sub i64 %secs, 1
+    %ns3   = add i32 1000000000, %nsecs
+    store i64 %s3, i64* %secp
+    store i32 %ns3, i32* %nsecp
+    br label %start
 }
 
-define %Ticks @getTicks()
+
+; INPUT: A base time, a time to add, and (optionally) a pointer to the result
+;        structure.
+; OUTPUT: The result of adding the first two times.
+; SIDE EFFECTS: If you pass in a pointer as the third argument, its fields
+;               will be replaced with the resulting values, and it will be
+;               returned. If you pass NULL as the third argument, the result
+;               structure will be allocated for you.
+define ccc %TimeSpec* @addTime(%TimeSpec* %time1, %TimeSpec* %time2,
+                               %TimeSpec* %inRes)
 {
-    %temp  = alloca %TimeSpec
-    br label %tryAgain
+start:
+    ; 1 second is 1,000,000,000 seconds, and an i32 can handle a bit over
+    ; 2,000,000,000 values. So as long as the input values are simplified
+    ; appropriately, we should be safe to just add the values together
+    ; without worrying about overflow. However, let us be paranoid and do
+    ; the simplification here, just in case.
+    call void @standardizeTime(%TimeSpec* %time1)
+    call void @standardizeTime(%TimeSpec* %time2)
+    ; Yank all the data out of these structures
+    %secp1  = getelementptr %TimeSpec* %time1, i32 0, TIMESPEC_FIELD_SECS
+    %secp2  = getelementptr %TimeSpec* %time2, i32 0, TIMESPEC_FIELD_SECS
+    %nsecp1 = getelementptr %TimeSpec* %time1, i32 0, TIMESPEC_FIELD_NSECS
+    %nsecp2 = getelementptr %TimeSpec* %time2, i32 0, TIMESPEC_FIELD_NSECS
+    %secs1  = load i64* %secp1
+    %secs2  = load i64* %secp2
+    %nsecs1 = load i32* %nsecp1
+    %nsecs2 = load i32* %nsecp2
+    ; naively add them together
+    %secs   = add i64 %secs1, %secs2
+    %nsecs  = add i32 %nsecs1, %nsecs2
+    ; were we provided with an output pointer? If not, allocate one.
+    %ris0   = icmp eq %TimeSpec* %inRes, null
+    br i1 %ris0, label %allocateRes, label %finish
 
-tryAgain: 
-    %gtres = call i64 @clock_gettime(i32 1, %TimeSpec* %temp) ; 1=CLOCK_MONOTONIC
-    %isOK  = icmp eq i64 %gtres, 0
-    br i1 %isOK, label %returnTime, label %tryAgain
+allocateRes:
+    ; create the new structure and naively add them together
+    %tssp   = getelementptr %TimeSpec* null, i32 1
+    %tssize = ptrtoint %TimeSpec* %tssp to i64
+    %ptr    = call i8* @malloc(i64 %tssize) 
+    %retval = bitcast i8* %ptr to %TimeSpec*
+    br label %finish
 
-returnTime:
-    %res   = call i64 @timespecToTicks(%TimeSpec* %temp)
-    ret i64 %res
+finish:
+    %retptr = phi %TimeSpec* [%inRes, %start], [%retval, %allocateRes]
+    %retsp  = getelementptr %TimeSpec* %retptr, i32 0, TIMESPEC_FIELD_SECS
+    %retnsp = getelementptr %TimeSpec* %retptr, i32 0, TIMESPEC_FIELD_NSECS
+    store i64 %secs, i64* %retsp
+    store i32 %nsecs, i32* %retnsp
+    ; simplify the new fellow and return him
+    call void @standardizeTime(%TimeSpec* %retptr)
+    ret %TimeSpec* %retptr
 }
 
-@.ERR_weird   = internal constant [47 x i8] 
-         c"Called clock_nanosleep and got weird response.\00"
-@.ERR_badaddr = internal constant [43 x i8]
-         c"Called clock_nanosleep with bad addresses.\00"
-@.ERR_badtval = internal constant [45 x i8]
-         c"Called clock_nanosleep with bad tval values.\00"
-@.ERR         = internal constant [11 x i8]
-         c"ERROR: %s\0a\00"
-
-define void @sleepFor(%Ticks %ticks)
+define ccc i64 @compareTime(%TimeSpec* %tm1, %TimeSpec* %tm2)
 {
-    %skipSleep = icmp slt %Ticks %ticks, 128
-    br i1 %skipSleep, label %done, label %startSleep
+    call void @standardizeTime(%TimeSpec* %tm1)
+    call void @standardizeTime(%TimeSpec* %tm2)
 
-startSleep:
-    %tval      = alloca %TimeSpec
-    call void @ticksToTimespec(%Ticks %ticks, %TimeSpec* %tval)
-    br label %doSleep
+    %secp1  = getelementptr %TimeSpec* %tm1, i32 0, TIMESPEC_FIELD_SECS
+    %secp2  = getelementptr %TimeSpec* %tm2, i32 0, TIMESPEC_FIELD_SECS
+    %sec1   = load i64* %secp1
+    %sec2   = load i64* %secp2
+    %islt   = icmp slt i64 %sec1, %sec2
+    br i1 %islt, label %lower, label %gte
 
-doSleep:
-    %sleepFor  = phi %TimeSpec* [%tval, %startSleep], [%rem, %doSleep]
-    %rem       = alloca %TimeSpec
-    %res       = call i32 @clock_nanosleep(i32 1, ; CLOCK_MONOTONIC
-                                           i32 0, ; TIMER_RELTIME
-                                           %TimeSpec* %sleepFor, ; request
-                                           %TimeSpec* %rem) ;remain
-    switch i32 %res, label %weird [
-        i32 0,  label %done               ; no error
-        i32 14, label %invalidAddress     ; EFAULT
-        i32 22, label %invalidTime        ; EINVAL
-        i32 4,  label %doSleep            ; EINTR
-      ]
+gte:
+    %isgt   = icmp sgt i64 %sec1, %sec2
+    br i1 %isgt, label %greater, label %testns
 
-weird:
-    %errstrW   = getelementptr [47 x i8]* @.ERR_weird, i32 0, i32 0
-    br label %error
+testns:
+    %nsecp1 = getelementptr %TimeSpec* %tm1, i32 0, TIMESPEC_FIELD_NSECS
+    %nsecp2 = getelementptr %TimeSpec* %tm2, i32 0, TIMESPEC_FIELD_NSECS
+    %nsec1  = load i32* %nsecp1
+    %nsec2  = load i32* %nsecp2
+    %isnlt  = icmp slt i32 %nsec1, %nsec2
+    br i1 %isnlt, label %lower, label %ngte
 
-invalidAddress:
-    %errstrIA  = getelementptr [43 x i8]* @.ERR_badaddr, i32 0, i32 0
-    br label %error
+ngte:
+    %isngt  = icmp sgt i32 %nsec1, %nsec2
+    br i1 %isngt, label %greater, label %equal
 
-invalidTime:
-    %errstrIT  = getelementptr [45 x i8]* @.ERR_badtval, i32 0, i32 0
-    br label %error
+lower:
+    ret i64 -1
 
-error:
-    %errstr    = phi i8* [%errstrW, %weird], [%errstrIA, %invalidAddress],
-                         [%errstrIT, %invalidTime]
-    %basestr   = getelementptr [11 x i8]* @.ERR, i32 0, i32 0
-    call i32(i8*,...)* @printf(i8* %basestr, i8* %errstr)
-    call void @exit(i32 -1)
-    unreachable
+equal:
+    ret i64 0
 
-done:
-    ret void
+greater:
+    ret i64 1
+
 }
 
-define  void @sleepUntil(%Ticks %ticks)
+define ccc %TimeSpec* @diffTime(%TimeSpec* %tm1, %TimeSpec* %tm2,
+                                %TimeSpec* %inRes)
 {
-    %tval   = alloca %TimeSpec
-    call void @ticksToTimespec(%Ticks %ticks, %TimeSpec* %tval)
-    %res    = call i32 @clock_nanosleep(i32 1,  ; CLOCK_MONOTONIC
-                                        i32 1,  ; TIMER_ABSTIME
-                                        %TimeSpec* %tval, ; request
-                                        %TimeSpec* null)  ; dont care
-    switch i32 %res, label %weird [
-        i32 0,  label %done               ; no error
-        i32 14, label %invalidAddress     ; EFAULT
-        i32 22, label %invalidTime        ; EINVAL
-        i32 4,  label %done               ; EINTR
-      ]
+start:
+    call void @standardizeTime(%TimeSpec* %tm1)
+    call void @standardizeTime(%TimeSpec* %tm2)
+    %ris0   = icmp eq %TimeSpec* %inRes, null
+    br i1 %ris0, label %allocateRetval, label %finish
 
-weird:
-    %errstrW   = getelementptr [47 x i8]* @.ERR_weird, i32 0, i32 0
-    br label %error
+allocateRetval:
+    ; generate the result value
+    %tssp   = getelementptr %TimeSpec* null, i32 1
+    %tssize = ptrtoint %TimeSpec* %tssp to i64
+    %ptr    = call i8* @malloc(i64 %tssize) 
+    %retval = bitcast i8* %ptr to %TimeSpec*
+    br label %finish
 
-invalidAddress:
-    %errstrIA  = getelementptr [43 x i8]* @.ERR_badaddr, i32 0, i32 0
-    br label %error
-
-invalidTime:
-    %errstrIT  = getelementptr [45 x i8]* @.ERR_badtval, i32 0, i32 0
-    br label %error
-
-error:
-    %errstr    = phi i8* [%errstrW, %weird], [%errstrIA, %invalidAddress],
-                         [%errstrIT, %invalidTime]
-    %basestr   = getelementptr [11 x i8]* @.ERR, i32 0, i32 0
-    call i32(i8*,...)* @printf(i8* %basestr, i8* %errstr)
-    call void @exit(i32 -1)
-    unreachable
-
-done:
-    ret void
+finish:
+    %retptr = phi %TimeSpec* [%retval, %allocateRetval], [%inRes, %start]
+    %rsec   = getelementptr %TimeSpec* %retptr, i32 0, TIMESPEC_FIELD_SECS
+    %rnsec  = getelementptr %TimeSpec* %retptr, i32 0, TIMESPEC_FIELD_NSECS
+    ; get all the values we need.
+    %s1p    = getelementptr %TimeSpec* %tm1, i32 0, TIMESPEC_FIELD_SECS
+    %ns1p   = getelementptr %TimeSpec* %tm1, i32 0, TIMESPEC_FIELD_NSECS
+    %s2p    = getelementptr %TimeSpec* %tm2, i32 0, TIMESPEC_FIELD_SECS
+    %ns2p   = getelementptr %TimeSpec* %tm2, i32 0, TIMESPEC_FIELD_NSECS
+    %bases1 = load i64* %s1p
+    %bases2 = load i64* %s2p
+    %basen1 = load i32* %ns1p
+    %basen2 = load i32* %ns2p
+    %secs   = sub i64 %bases1, %bases2
+    %nsecs  = sub i32 %basen1, %basen2
+    store i64 %secs, i64* %rsec
+    store i32 %nsecs, i32* %rnsec
+    call void @standardizeTime(%TimeSpec* %retptr)
+    ret %TimeSpec* %retptr
 }
-
