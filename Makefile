@@ -13,7 +13,7 @@ CPPFLAGS    = -Iinclude/ -nostdinc
 
 ifeq ("$(shell uname -s)","Linux")
 ASFLAGS  += -c
-LDFLAGS  += -lrt
+LDFLAGS  +=
 CPPFLAGS += -DLINUX
 SYSTEM    = Linux
 endif

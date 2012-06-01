@@ -1,3 +1,4 @@
+#define SYSTEM_LLA
 #include "system.llh"
 
 declare i32 @gettimeofday(%TimeSpec*, i8*)

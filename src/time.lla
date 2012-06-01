@@ -1,3 +1,4 @@
+#define TIME_LLA
 #include "system.llh"
 #include "time.llh"
 

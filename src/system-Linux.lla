@@ -1,3 +1,4 @@
+#define SYSTEM_LLA
 #include "system.llh"
 
 %TimeSpecL     = type { i64, i64 }

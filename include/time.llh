@@ -5,6 +5,7 @@
 #define TIMESPEC_FIELD_SECS     i32 0
 #define TIMESPEC_FIELD_NSECS    i32 1
 
+#ifndef TIME_LLA
 ; INPUT: A pointer to a TimeSpec that should be standardized to meet normal
 ;        operating conventions.
 ; OUTPUT: None
@@ -31,5 +32,6 @@ declare ccc i64        @compareTime(%TimeSpec*, %TimeSpec*)
 ;        as the third argument, one will be allocated for you.
 ; OUTPUT: a - b
 declare ccc %TimeSpec* @diffTime(%TimeSpec*, %TimeSpec*, %TimeSpec*)
+#endif
 
 #endif

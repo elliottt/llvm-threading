@@ -9,10 +9,12 @@
 #define QUEUE_FIELD_FIRST       0
 #define QUEUE_FIELD_LAST        1
 
+#ifndef QUEUE_LLA
 declare %Queue* @newQueue()
 declare void    @freeQueue(%Queue* %ptr)
 declare void    @enqueue(%Queue* %ptr, i8* %val)
 declare i8*     @dequeue(%Queue* %ptr)
 declare i64     @queueLength(%Queue* %ptr)
+#endif
 
 #endif

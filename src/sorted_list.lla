@@ -1,3 +1,4 @@
+#define SORTED_LIST_LLA
 #include "sorted_list.llh"
 #include "system.llh"
 

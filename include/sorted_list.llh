@@ -10,11 +10,13 @@
 #define SLIST_FIELD_FIRST       0
 #define SLIST_FIELD_COMPARATOR  1
 
+#ifndef SORTED_LIST_LLA
 declare %SortList* @newSortedList(%Comparator* %comp)
 declare %SortList* @newSortedListLT()
 declare void       @freeSortList(%SortList* %list)
 declare void       @addSortListItem(%SortList* %list, i8* %item)
 declare i8*        @getSortListItem(%SortList* %list)
 declare i64        @getSortListLength(%SortList* %list)
+#endif
 
 #endif

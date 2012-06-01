@@ -5,6 +5,8 @@
 
 #include "time.llh"
 
+%AlarmCallback = type void()
+
 ; We must have a malloc and free implementation that works as per normal.
 declare i8* @malloc(i64)
 declare void @free(i8*)
@@ -14,15 +16,15 @@ declare void @free(i8*)
 declare i32  @printf(i8* noalias nocapture, ...)
 declare void @exit(i32) noreturn
 
-%AlarmCallback = type void()
-
 ; Finally, the system must have a way of representing time, setting timers,
 ; and getting the current time.
 
 ; If the input TimeSpec* is NULL, a new TimeSpec should be allocated.
 ; Otherwise, it should be used as the result pointer (and returned as such)
+#ifndef SYSTEM_LLA
 declare %TimeSpec* @system_time(%TimeSpec*)
 declare void @system_sleepFor(%TimeSpec*)
 declare void @system_run_every(%TimeSpec*, %AlarmCallback*)
+#endif
 
 #endif
