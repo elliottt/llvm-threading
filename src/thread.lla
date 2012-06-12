@@ -49,7 +49,7 @@
 
 @running_queue  = internal global %Queue*    null
 @sleeping_queue = internal global %SortList* null
-@change_thrs_at = internal global %TimeSpec* null
+@should_change  = internal global i1         false
 @current_thread = internal global %TCB*      null
 @original_stack = internal global %Stack     null
 
@@ -71,6 +71,11 @@ define coldcc void @run_threaded_system(%task* %t, i8* %val, i64 %stackSize)
     ret void
 }
 
+define private void @setSwitch()
+{
+    store i1 true, i1* @should_change
+    ret void
+}
 
 define private void @run_threaded_system2(%task* %t, i8* %val, i64 %stackSize)
    naked
@@ -84,11 +89,8 @@ define private void @run_threaded_system2(%task* %t, i8* %val, i64 %stackSize)
     %squeue   = call %SortList* @newSortedList(%Comparator* @compareSleepers)
     store %SortList* %squeue, %SortList** @sleeping_queue
     ; initialize the time to change threads
-    %now      = alloca %TimeSpec
-    %dead     = call %TimeSpec* @system_time(%TimeSpec* %now)
-    %switchAt = call %TimeSpec* @addTime(%TimeSpec* %now,%TimeSpec* @.TimeSlice,
-                                         %TimeSpec* null)
-    store %TimeSpec* %switchAt, %TimeSpec** @change_thrs_at
+    call void @system_run_every(%TimeSpec* @.TimeSlice,
+                                %AlarmCallback* @setSwitch)
     ; initialize the current thread to nil for now.
     store %TCB* null, %TCB** @current_thread
     ; create the initial thread
@@ -207,20 +209,11 @@ define private void @yield2() naked
 ;      time slice.
 define coldcc void @maybeYield()
 {
-    %now      = alloca %TimeSpec
-    %dead0    = call %TimeSpec* @system_time(%TimeSpec* %now)
-    %switchAt = load %TimeSpec** @change_thrs_at
-    %compare  = call i64 @compareTime(%TimeSpec* %now, %TimeSpec* %switchAt)
-    %switch   = icmp sge i64 %compare, 0
+    %switch   = load i1* @should_change
     br i1 %switch, label %shouldReschedule, label %keepGoing
 
 shouldReschedule:
-    ; OK, recompute when to switch
-    %fptr     = bitcast %TimeSpec* %switchAt to i8*
-    %newSwtch = load %TimeSpec** @change_thrs_at
-    %dead1    = call %TimeSpec* @addTime(%TimeSpec* %now,
-                                         %TimeSpec* @.TimeSlice,
-                                         %TimeSpec* %newSwtch)
+    store i1 false, i1* @should_change
     ; run the yield
     %cur_t   = load %TCB** @current_thread
     SAVE_CALLEE_SAVE_REGISTERS()

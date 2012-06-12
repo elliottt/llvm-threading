@@ -7,13 +7,39 @@
 %SigSet        = type [16 x i64]
 %ActionHandler = type void(i32, %SigInfo*, i8*)
 %Restorer      = type void()
-%SigAction     = type { %ActionHandler*, %SigSet, i32, %Restorer* } 
+%SigAction     = type { %ActionHandler*, %SigSet, i32, %Restorer* }
+#define sa_handler  0
+#define sa_mask     1
+#define sa_flags    2
+#define sa_restorer 3
+%SigEvent      = type { i64*, i32, i32, i32, [11 x i32] }
+#define sigev_value  0
+#define sigev_signo  1
+#define sigev_notify 2
+#define sigev_tid    3
+#define sigev_pad    4
+%ITimerSpec    = type { i64, i64, i64, i64 }
+#define its_initial_sec   0
+#define its_initial_nsec  1
+#define its_update_sec    2
+#define its_update_nsec   3
 
-declare i32 @gettimeofday(%TimeSpecL*, i8*)
-declare i32 @nanosleep(%TimeSpecL*, %TimeSpecL*)
-declare i32 @setitimer(i32, %TimeSpecL*, %TimeSpecL*)
-declare i32 @sigemptyset(%SigSet*)
-declare i32 @sigaction(i32, %SigAction*, %SigAction*)
+#define SA_SIGINFO                  4
+#define SIGEV_THREAD_ID             4
+#define SIGALRM                     14
+#define SYS_gettid                  186
+#define CLOCK_THREAD_CPUTIME_ID     3
+
+declare i32  @gettimeofday(%TimeSpecL*, i8*)
+declare i32  @nanosleep(%TimeSpecL*, %TimeSpecL*)
+declare i32  @setitimer(i32, %TimeSpecL*, %TimeSpecL*)
+declare void @sigemptyset(%SigSet*)
+declare i32  @sigaction(i32, %SigAction*, %SigAction*)
+declare i32  @syscall(i32)
+declare i32  @timer_create(i32, %SigEvent*, i64*)
+declare i32  @timer_settime(i64, i32, %ITimerSpec*, %ITimerSpec*)
+
+@current_timeslice_callback = internal thread_local global %AlarmCallback* null
 
 define %TimeSpec* @system_time(%TimeSpec* %inRes)
 {
@@ -82,7 +108,82 @@ done:
     ret void
 }
 
-define void @system_run_every(%TimeSpec* %ts, %AlarmCallback* %call)
+define void @timer_handler(i32 %sig, %SigInfo* %si, i8* %ucontext)
 {
+    %cb     = load %AlarmCallback** @current_timeslice_callback
+    %isOK   = icmp eq %AlarmCallback* %cb, null
+    br i1 %isOK, label %done, label %haveCallback
+
+haveCallback:
+    call void %cb()
+    br label %done
+
+done:
     ret void
+}
+
+define i32 @system_run_every(%TimeSpec* %ts, %AlarmCallback* %call)
+{
+    %sev    = alloca %SigEvent
+    %sa     = alloca %SigAction
+    %its    = alloca %ITimerSpec
+    %timid  = alloca i64
+    br label %setsa
+
+setsa:
+    ; set up the event handler
+    %saflgp = getelementptr %SigAction* %sa, i32 0, i32 sa_flags
+    %sahndp = getelementptr %SigAction* %sa, i32 0, i32 sa_handler
+    %samskp = getelementptr %SigAction* %sa, i32 0, i32 sa_mask
+    store i32 SA_SIGINFO, i32* %saflgp
+    store %ActionHandler* @timer_handler, %ActionHandler** %sahndp
+    call void @sigemptyset(%SigSet* %samskp)
+    %res1   = call i32 @sigaction(i32 SIGALRM, %SigAction* %sa,
+                                  %SigAction* null)
+    %isneg1 = icmp slt i32 %res1, 0
+    br i1 %isneg1, label %fail, label %setsev
+
+setsev:
+    %tid    = call i32 @syscall(i32 SYS_gettid)
+    %svnotp = getelementptr %SigEvent* %sev, i32 0, i32 sigev_notify
+    %svnop  = getelementptr %SigEvent* %sev, i32 0, i32 sigev_signo
+    %svvalp = getelementptr %SigEvent* %sev, i32 0, i32 sigev_value
+    %svtidp = getelementptr %SigEvent* %sev, i32 0, i32 sigev_tid
+    store i32 SIGEV_THREAD_ID, i32* %svnotp
+    store i32 SIGALRM, i32* %svnop
+    store i64* %timid, i64** %svvalp
+    store i32 %tid, i32* %svtidp
+    %res2   = call i32 @timer_create(i32 CLOCK_THREAD_CPUTIME_ID,
+                                     %SigEvent* %sev, i64* %timid)
+    %isneg2 = icmp slt i32 %res2, 0
+    br i1 %isneg2, label %fail, label %setit
+
+setit:
+    %secp1  = getelementptr %ITimerSpec* %its, i32 0, i32 its_initial_sec
+    %nsecp1 = getelementptr %ITimerSpec* %its, i32 0, i32 its_initial_nsec
+    %secp2  = getelementptr %ITimerSpec* %its, i32 0, i32 its_update_sec
+    %nsecp2 = getelementptr %ITimerSpec* %its, i32 0, i32 its_update_nsec
+    %secp0  = getelementptr %TimeSpec* %ts, i32 0, TIMESPEC_FIELD_SECS
+    %nsecp0 = getelementptr %TimeSpec* %ts, i32 0, TIMESPEC_FIELD_NSECS
+    %sec    = load i64* %secp0
+    %nsec32 = load i32* %nsecp0
+    %nsec64 = sext i32 %nsec32 to i64
+    store i64 %sec, i64* %secp1
+    store i64 %sec, i64* %secp2
+    store i64 %nsec64, i64* %nsecp1
+    store i64 %nsec64, i64* %nsecp2 
+    %timer  = load i64* %timid
+    %res3   = call i32 @timer_settime(i64 %timer, i32 0,
+                                      %ITimerSpec* %its,
+                                      %ITimerSpec* null)
+    %isneg3 = icmp slt i32 %res3, 0
+    br i1 %isneg3, label %fail, label %yay
+
+yay:
+    store %AlarmCallback* %call, %AlarmCallback** @current_timeslice_callback
+    ret i32 0
+
+fail:
+    %res = phi i32 [%res1, %setsa],[%res2,%setsev],[%res3,%setit]
+    ret i32 %res
 }

@@ -58,6 +58,9 @@ baseTests = [
   ],
   testGroup "Maybe-Yield Tests" [
     buildCheckTest "test.maybeYield" maybeYieldCheck
+  ],
+  testGroup "Timer Tests" [
+    buildCheckTest "test.timer1" timerCheck
   ]
  ]
 
@@ -549,3 +552,10 @@ maybeYieldCheck str = length groupedOutput > 10
   output        = lines str
   output'       = map (take 1 . drop (length "Thread #")) output
   groupedOutput = group output'
+
+timerCheck :: String -> Bool
+timerCheck str =
+  case lines str of
+    []               -> False
+    ("res = 0":rest) -> (length rest > 20) && all (== "TICK!") rest
+    _                -> False
