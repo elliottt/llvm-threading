@@ -22,17 +22,25 @@ quiet_cmd_ll_to_bc  = LLVM_AS $(notdir $@)
 %.bc: %.ll
 	$(call cmd,ll_to_bc)
 
+ifeq ($(COMPILE_THROUGH_AS),)
 # bc -> o
 cmd_bc_to_o         = $(LLC) $(LLCFLAGS) -filetype=obj -o $@ $<
 quiet_cmd_bc_to_o   = LLC     $(notdir $@)
 %.o: %.bc
 	$(call cmd,bc_to_o)
+else
+# bc -> s
+cmd_ll_to_s         = $(LLC) $(LLCFLAGS) -o $@ $<
+quiet_cmd_ll_to_s   = LLC     $(notdir $@)
+%.s: %.bc
+	$(call cmd,ll_to_s)
 
-## s -> o
-#cmd_s_to_o          = $(AS) $(ASFLAGS) -o $@ $<
-#quiet_cmd_s_to_o    = AS      $(notdir $@)
-#%.o: %.s
-#	$(call cmd,s_to_o)
+# s -> o
+cmd_s_to_o          = $(AS) $(ASFLAGS) -o $@ $<
+quiet_cmd_s_to_o    = AS      $(notdir $@)
+%.o: %.s
+	$(call cmd,s_to_o)
+endif
 
 # c -> o
 cmd_c_to_o          = $(CC) $(CFLAGS) -o $@ $<

@@ -4,16 +4,18 @@ LLC         = llc
 LLCFLAGS    =
 CC          = clang
 CFLAGS      = -g -c -Iinclude/ -Wall -Werror
-LD          = llvm-ld -native
+LD          = gcc
 LDFLAGS     =
 GHC         = ghc
 GHCFLAGS    =
 CPP         = clang -E
 CPPFLAGS    = -Iinclude/ -nostdinc
+AS          = as
+ASFLAGS     = -g
 
 ifeq ("$(shell uname -s)","Linux")
 ASFLAGS  += -c
-LDFLAGS  +=
+LDFLAGS  += -lrt
 CPPFLAGS += -DLINUX
 SYSTEM    = Linux
 endif
