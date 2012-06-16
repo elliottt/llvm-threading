@@ -9,7 +9,8 @@ struct tspec {
   uint32_t nsec;
 };
 
-extern int system_run_every(struct tspec *ts, void (*callback)());
+extern int set_timer_handler(void (*callback)());
+extern long long int start_thread_timer(struct tspec*);
 
 void handler()
 {
@@ -21,11 +22,16 @@ int main(int argc, char **argv)
   struct tspec ts = { 0, 20000000 };
   int res;
 
-  res = system_run_every(&ts, handler);
-  printf("res = %i\n", res);
-  if(res == 0) {
+  res = set_timer_handler(&handler);
+  if(res != 0) {
+    printf("set alarm fail: %d\n", res);
+    exit(res);
+  }
+  res = start_thread_timer(&ts);
+  if(res >= 0) {
     struct timeval cur, goal;
 
+    printf("Got a timer!\n");
     gettimeofday(&cur, NULL);
     goal.tv_sec = cur.tv_sec + 5;
 
@@ -33,5 +39,5 @@ int main(int argc, char **argv)
       gettimeofday(&cur, NULL);
   }
 
-  return res;
+  return res > 0 ? 0 : res;
 }

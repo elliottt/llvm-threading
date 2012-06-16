@@ -24,7 +24,9 @@ declare void @exit(i32) noreturn
 #ifndef SYSTEM_LLA
 declare %TimeSpec* @system_time(%TimeSpec*)
 declare void @system_sleepFor(%TimeSpec*)
-declare void @system_run_every(%TimeSpec*, %AlarmCallback*)
+declare i32 @set_timer_handler(%AlarmCallback*)
+declare i64 @start_thread_timer(%TimeSpec*)
+declare i64 @numProcessors()
 #endif
 
 #endif

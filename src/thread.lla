@@ -47,11 +47,11 @@
 
 %task = type void(i8*)
 
-@running_queue  = internal global %Queue*    null
-@sleeping_queue = internal global %SortList* null
-@should_change  = internal global i1         false
-@current_thread = internal global %TCB*      null
-@original_stack = internal global %Stack     null
+@running_queue  = internal thread_local global %Queue*    null
+@sleeping_queue = internal thread_local global %SortList* null
+@should_change  = internal thread_local global i1         false
+@current_thread = internal thread_local global %TCB*      null
+@original_stack = internal thread_local global %Stack     null
 
 ; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;
@@ -77,20 +77,33 @@ define private void @setSwitch()
     ret void
 }
 
+@.fail =internal constant [37 x i8] c"System initialization failure: %lli\0a\00"
+
 define private void @run_threaded_system2(%task* %t, i8* %val, i64 %stackSize)
    naked
 {
     %cur_s    = call %Stack @llvm.stacksave()
     store %Stack %cur_s, %Stack* @original_stack
+    br label %setTHandler
+
+setTHandler:
+    %res1     = call i32 @set_timer_handler(%AlarmCallback* @setSwitch)
+    %res641   = sext i32 %res1 to i64
+    %isNeg1   = icmp slt i64 %res641, 0
+    br i1 %isNeg1, label %fail, label %startTimer
+
+startTimer:
+    %res2     = call i64 @start_thread_timer(%TimeSpec* @.TimeSlice)
+    %isNeg2   = icmp slt i64 %res2, 0
+    br i1 %isNeg2, label %fail, label %systemsGo
+
+systemsGo:
     ; initialize the runing queue
     %queue    = call %Queue* @newQueue()
     store %Queue* %queue, %Queue** @running_queue
     ; initialize the sleeping queue
     %squeue   = call %SortList* @newSortedList(%Comparator* @compareSleepers)
     store %SortList* %squeue, %SortList** @sleeping_queue
-    ; initialize the time to change threads
-    call void @system_run_every(%TimeSpec* @.TimeSlice,
-                                %AlarmCallback* @setSwitch)
     ; initialize the current thread to nil for now.
     store %TCB* null, %TCB** @current_thread
     ; create the initial thread
@@ -109,6 +122,14 @@ define private void @run_threaded_system2(%task* %t, i8* %val, i64 %stackSize)
     call void @llvm.stackrestore(%Stack %s_topp)
     call void @start_thread(%task* %t, i8* %val)
     ret void ; probably will not get here
+
+fail:
+    %res     = phi i64 [%res641,%setTHandler],[%res2,%startTimer]
+    %res32   = trunc i64 %res to i32
+    %failstr = getelementptr [37 x i8]* @.fail, i64 0, i64 0
+    %ign     = call i32(i8*,...)* @printf(i8* %failstr, i64 %res)
+    call void @exit(i32 %res32)
+    ret void
 }
 
 ; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

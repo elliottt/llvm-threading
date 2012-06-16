@@ -29,6 +29,7 @@
 #define SIGALRM                     14
 #define SYS_gettid                  186
 #define CLOCK_THREAD_CPUTIME_ID     3
+#define _SC_NPROCESSORS_ONLN        84
 
 declare i32  @gettimeofday(%TimeSpecL*, i8*)
 declare i32  @nanosleep(%TimeSpecL*, %TimeSpecL*)
@@ -36,10 +37,11 @@ declare i32  @setitimer(i32, %TimeSpecL*, %TimeSpecL*)
 declare void @sigemptyset(%SigSet*)
 declare i32  @sigaction(i32, %SigAction*, %SigAction*)
 declare i32  @syscall(i32)
+declare i64  @sysconf(i32)
 declare i32  @timer_create(i32, %SigEvent*, i64*)
 declare i32  @timer_settime(i64, i32, %ITimerSpec*, %ITimerSpec*)
 
-@current_timeslice_callback = internal thread_local global %AlarmCallback* null
+@current_timeslice_callback = internal global %AlarmCallback* null
 
 define %TimeSpec* @system_time(%TimeSpec* %inRes)
 {
@@ -122,15 +124,9 @@ done:
     ret void
 }
 
-define i32 @system_run_every(%TimeSpec* %ts, %AlarmCallback* %call)
+define i32 @set_timer_handler(%AlarmCallback* %call)
 {
-    %sev    = alloca %SigEvent
     %sa     = alloca %SigAction
-    %its    = alloca %ITimerSpec
-    %timid  = alloca i64
-    br label %setsa
-
-setsa:
     ; set up the event handler
     %saflgp = getelementptr %SigAction* %sa, i32 0, i32 sa_flags
     %sahndp = getelementptr %SigAction* %sa, i32 0, i32 sa_handler
@@ -140,8 +136,16 @@ setsa:
     call void @sigemptyset(%SigSet* %samskp)
     %res1   = call i32 @sigaction(i32 SIGALRM, %SigAction* %sa,
                                   %SigAction* null)
-    %isneg1 = icmp slt i32 %res1, 0
-    br i1 %isneg1, label %fail, label %setsev
+    store %AlarmCallback* %call, %AlarmCallback** @current_timeslice_callback
+    ret i32 %res1
+}
+
+define i64 @start_thread_timer(%TimeSpec* %ts)
+{
+    %sev    = alloca %SigEvent
+    %its    = alloca %ITimerSpec
+    %timid  = alloca i64
+    br label %setsev
 
 setsev:
     %tid    = call i32 @syscall(i32 SYS_gettid)
@@ -180,10 +184,16 @@ setit:
     br i1 %isneg3, label %fail, label %yay
 
 yay:
-    store %AlarmCallback* %call, %AlarmCallback** @current_timeslice_callback
-    ret i32 0
+    ret i64 %timer
 
 fail:
-    %res = phi i32 [%res1, %setsa],[%res2,%setsev],[%res3,%setit]
-    ret i32 %res
+    %res    = phi i32 [%res2,%setsev],[%res3,%setit]
+    %res64  = sext i32 %res to i64
+    ret i64 %res64
+}
+
+define i64 @numProcessors()
+{
+    %res    = call i64 @sysconf(i32 _SC_NPROCESSORS_ONLN)
+    ret i64 %res
 }

@@ -556,6 +556,6 @@ maybeYieldCheck str = length groupedOutput > 10
 timerCheck :: String -> Bool
 timerCheck str =
   case lines str of
-    []               -> False
-    ("res = 0":rest) -> (length rest > 20) && all (== "TICK!") rest
-    _                -> False
+    []                    -> False
+    ("Got a timer!":rest) -> (length rest > 20) && all (== "TICK!") rest
+    _                     -> False
