@@ -45,8 +45,10 @@
 #define CHANNEL_STATE_READER_WAITING    1
 #define CHANNEL_STATE_WRITER_WAITING    2
 
-%task = type void(i8*)
+%task     = type void(i8*)
+%SpinLock = type i64
 
+@runqueue_lock  = internal thread_local global %SpinLock  0
 @running_queue  = internal thread_local global %Queue*    null
 @sleeping_queue = internal thread_local global %SortList* null
 @should_change  = internal thread_local global i1         false
@@ -748,4 +750,29 @@ define private i8 @compareSleepers(i8* %sleep1i, i8* %sleep2i)
     %cmp  = call i64 @compareTime(%TimeSpec* %tm1, %TimeSpec* %tm2)
     %cmp8 = trunc i64 %cmp to i8
     ret i8 %cmp8
+}
+
+; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+; Locking
+;
+; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+define void @spinlock(%SpinLock* %lock)
+{
+    br label %spinner
+
+spinner:
+    %res = cmpxchg %SpinLock* %lock, i64 0, i64 1 seq_cst
+    %is0 = icmp eq i64 %res, 0
+    br i1 %is0, label %done, label %spinner
+
+done:
+    ret void
+}
+
+define void @spinunlock(%SpinLock* %lock)
+{
+    store i64 0, %SpinLock* %lock
+    ret void
 }
