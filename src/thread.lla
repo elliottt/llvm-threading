@@ -48,12 +48,14 @@
 %task     = type void(i8*)
 %SpinLock = type i64
 
-@runqueue_lock  = internal thread_local global %SpinLock  0
+@runqueue_lock  = internal thread_local global %SpinLock* null
 @running_queue  = internal thread_local global %Queue*    null
 @sleeping_queue = internal thread_local global %SortList* null
 @should_change  = internal thread_local global i1         false
 @current_thread = internal thread_local global %TCB*      null
 @original_stack = internal thread_local global %Stack     null
+
+
 
 ; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;
@@ -125,9 +127,13 @@ startTimer:
     br i1 %isNeg2, label %fail, label %systemsGo
 
 systemsGo:
-    ; initialize the runing queue
+    ; initialize the running queue
     %queue    = call %Queue* @newQueue()
     store %Queue* %queue, %Queue** @running_queue
+    %locki8   = call i8* @malloc(i64 8)
+    %lock     = bitcast i8* %locki8 to %SpinLock*
+    store i64 0, i64* %lock
+    store %SpinLock* %lock, %SpinLock** @runqueue_lock
     ; initialize the sleeping queue
     %squeue   = call %SortList* @newSortedList(%Comparator* @compareSleepers)
     store %SortList* %squeue, %SortList** @sleeping_queue
@@ -207,10 +213,11 @@ define private void @create_thread2(%task* %t, i8* %val, %TCB* %tcb)
     store %Stack %cur_s, %Stack* %stackPP
     ; add the current thread object to the run queue and reset the current
     ; thread pointer to null
-    call void @spinlock(%SpinLock* @runqueue_lock)
+    %lock    = load %SpinLock** @runqueue_lock
+    call void @spinlock(%SpinLock* %lock)
     %queue   = load %Queue** @running_queue
     call void @enqueueTCB(%Queue* %queue, %TCB* %cur_t)
-    call void @spinunlock(%SpinLock* @runqueue_lock)
+    call void @spinunlock(%SpinLock* %lock)
     ; "restore" the stack and call into the function we want
     store %TCB* %tcb, %TCB** @current_thread
     %tcpstt  = getelementptr %TCB* %tcb, i32 0, i32 TCB_FIELD_STACK_TOP
@@ -243,10 +250,11 @@ define private void @yield2() naked
     %stackPP = getelementptr %TCB* %cur_t, i32 0, i32 TCB_FIELD_STACK_TOP
     store %Stack %cur_s, %Stack* %stackPP
     ; add the current thread object to the running queue
-    call void @spinlock(%SpinLock* @runqueue_lock)
+    %lock    = load %SpinLock** @runqueue_lock
+    call void @spinlock(%SpinLock* %lock)
     %queue   = load %Queue** @running_queue
     call void @enqueueTCB(%Queue* %queue, %TCB* %cur_t)
-    call void @spinunlock(%SpinLock* @runqueue_lock)
+    call void @spinunlock(%SpinLock* %lock)
     ; there is no currently running thread!
     store %TCB* null, %TCB** @current_thread
     call void @schedule()
@@ -356,10 +364,11 @@ good_queue:
     ; Free the waiter structure
     call void @free(i8* %first)
     ; Add the blocked thread back to the wait queue
-    call void @spinlock(%SpinLock* @runqueue_lock)
+    %lock   = load %SpinLock** @runqueue_lock
+    call void @spinlock(%SpinLock* %lock)
     %tqueue = load %Queue** @running_queue
     call void @enqueueTCB(%Queue* %tqueue, %TCB* %thread)
-    call void @spinunlock(%SpinLock* @runqueue_lock)
+    call void @spinunlock(%SpinLock* %lock)
     ; Write the value to the out value and return
     store i8* %val, i8** %valp
     ; Is this the last reader waiting for us?
@@ -448,10 +457,11 @@ good_queue:
     ; Free the waiter structure
     call void @free(i8* %first)
     ; Add the blocked thread back to the wait queue
-    call void @spinlock(%SpinLock* @runqueue_lock)
+    %lock   = load %SpinLock** @runqueue_lock
+    call void @spinlock(%SpinLock* %lock)
     %tqueue = load %Queue** @running_queue
     call void @enqueueTCB(%Queue* %tqueue, %TCB* %thread)
-    call void @spinunlock(%SpinLock* @runqueue_lock)
+    call void @spinunlock(%SpinLock* %lock)
     ; Write the value to the out value and return
     store i8* %val, i8** %valp
     ; Is this the last writer waiting for us?
@@ -615,7 +625,8 @@ define private void @start_thread(%task* %t, i8* %data) noreturn
     ; run the body of the thread
     call void %t(i8* %data)
     ; hey, we are back. cool. find our join list.
-    call void @spinlock(%SpinLock* @runqueue_lock)
+    %lock    = load %SpinLock** @runqueue_lock
+    call void @spinlock(%SpinLock* %lock)
     %cur_t   = load %TCB** @current_thread
     %jlptr   = getelementptr %TCB* %cur_t, i32 0, i32 TCB_FIELD_JOINED_THREADS
     %jlist   = load %Queue** %jlptr
@@ -633,7 +644,7 @@ moveAndLoop:
 
 cleanup:
     ; cleanup the current thread
-    call void @spinunlock(%SpinLock* @runqueue_lock)
+    call void @spinunlock(%SpinLock* %lock)
     %cur     = load %TCB** @current_thread
     %curi8   = bitcast %TCB* %cur to i8*
     %stackP  = getelementptr %TCB* %cur, i32 0, i32 TCB_FIELD_STACK_BOTTOM
@@ -651,12 +662,13 @@ define private void @schedule() naked
     br label %start
 
 start:
-    call void @spinlock(%SpinLock* @runqueue_lock)
+    %lock    = load %SpinLock** @runqueue_lock
+    call void @spinlock(%SpinLock* %lock)
     %queue   = load %Queue** @running_queue
     call void @wakeReadySleepers()
     ; yank the next thread off the queue
     %next    = call %TCB* @dequeueTCB(%Queue* %queue)
-    call void @spinunlock(%SpinLock* @runqueue_lock)
+    call void @spinunlock(%SpinLock* %lock)
     %nothr   = icmp eq %TCB* %next, null
     br i1 %nothr, label %emptyRunQueue, label %gotNextThread
 
