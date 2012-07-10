@@ -1,7 +1,7 @@
 LLVM_AS     = llvm-as
 LLASFLAGS   =
 LLC         = llc
-LLCFLAGS    =
+LLCFLAGS    = -O2
 CC          = clang
 CFLAGS      = -g -c -Iinclude/ -Wall -Werror
 LD          = gcc
