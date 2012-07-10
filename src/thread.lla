@@ -57,6 +57,31 @@
 
 ; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;
+; Locking
+;
+; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+define private void @spinlock(%SpinLock* %lock) alwaysinline
+{
+    br label %spinner
+ 
+ spinner:
+    %res = cmpxchg %SpinLock* %lock, i64 0, i64 1 seq_cst
+    %is0 = icmp eq i64 %res, 0
+    br i1 %is0, label %done, label %spinner
+ 
+ done:
+    ret void
+}
+
+define private void @spinunlock(%SpinLock* %lock) alwaysinline
+{
+    store i64 0, %SpinLock* %lock
+    ret void
+}
+
+; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
 ; System Initialization
 ;
 ; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -182,8 +207,10 @@ define private void @create_thread2(%task* %t, i8* %val, %TCB* %tcb)
     store %Stack %cur_s, %Stack* %stackPP
     ; add the current thread object to the run queue and reset the current
     ; thread pointer to null
+    call void @spinlock(%SpinLock* @runqueue_lock)
     %queue   = load %Queue** @running_queue
     call void @enqueueTCB(%Queue* %queue, %TCB* %cur_t)
+    call void @spinunlock(%SpinLock* @runqueue_lock)
     ; "restore" the stack and call into the function we want
     store %TCB* %tcb, %TCB** @current_thread
     %tcpstt  = getelementptr %TCB* %tcb, i32 0, i32 TCB_FIELD_STACK_TOP
@@ -216,8 +243,10 @@ define private void @yield2() naked
     %stackPP = getelementptr %TCB* %cur_t, i32 0, i32 TCB_FIELD_STACK_TOP
     store %Stack %cur_s, %Stack* %stackPP
     ; add the current thread object to the running queue
+    call void @spinlock(%SpinLock* @runqueue_lock)
     %queue   = load %Queue** @running_queue
     call void @enqueueTCB(%Queue* %queue, %TCB* %cur_t)
+    call void @spinunlock(%SpinLock* @runqueue_lock)
     ; there is no currently running thread!
     store %TCB* null, %TCB** @current_thread
     call void @schedule()
@@ -307,6 +336,7 @@ no_one_around:
     ret i32 0
 
 reader_waiting:
+    SAVE_CALLEE_SAVE_REGISTERS()
     ; grab the channel wait queue
     %qptr  = getelementptr %Channel* %chan, i32 0, i32 CHANNEL_FIELD_THREADS
     %queue = load %Queue** %qptr
@@ -326,8 +356,10 @@ good_queue:
     ; Free the waiter structure
     call void @free(i8* %first)
     ; Add the blocked thread back to the wait queue
+    call void @spinlock(%SpinLock* @runqueue_lock)
     %tqueue = load %Queue** @running_queue
     call void @enqueueTCB(%Queue* %tqueue, %TCB* %thread)
+    call void @spinunlock(%SpinLock* @runqueue_lock)
     ; Write the value to the out value and return
     store i8* %val, i8** %valp
     ; Is this the last reader waiting for us?
@@ -338,12 +370,15 @@ good_queue:
 nowEmpty:
     ; The queue went from reader waiting to empty, so update the state
     store i8 CHANNEL_STATE_OPEN, i8* %ptrst
+    RESTORE_CALLEE_SAVE_REGISTERS()
     ret i32 0
 
 allDone:
+    RESTORE_CALLEE_SAVE_REGISTERS()
     ret i32 0
 
 bad_queue:
+    RESTORE_CALLEE_SAVE_REGISTERS()
     ret i32 -2
 
 writer_waiting:
@@ -394,6 +429,7 @@ reader_waiting:
     ret i32 0
 
 writer_waiting:
+    SAVE_CALLEE_SAVE_REGISTERS()
     ; grab the channel wait queue
     %qptr  = getelementptr %Channel* %chan, i32 0, i32 CHANNEL_FIELD_THREADS
     %queue = load %Queue** %qptr
@@ -412,8 +448,10 @@ good_queue:
     ; Free the waiter structure
     call void @free(i8* %first)
     ; Add the blocked thread back to the wait queue
+    call void @spinlock(%SpinLock* @runqueue_lock)
     %tqueue = load %Queue** @running_queue
     call void @enqueueTCB(%Queue* %tqueue, %TCB* %thread)
+    call void @spinunlock(%SpinLock* @runqueue_lock)
     ; Write the value to the out value and return
     store i8* %val, i8** %valp
     ; Is this the last writer waiting for us?
@@ -424,12 +462,15 @@ good_queue:
 nowEmpty:
     ; The queue went from writer waiting to empty, so update the state
     store i8 CHANNEL_STATE_OPEN, i8* %ptrst
+    RESTORE_CALLEE_SAVE_REGISTERS()
     ret i32 0
 
 allDone:
+    RESTORE_CALLEE_SAVE_REGISTERS()
     ret i32 0
 
 bad_queue:
+    RESTORE_CALLEE_SAVE_REGISTERS()
     ret i32 -2
 
 bad_chan:
@@ -574,6 +615,7 @@ define private void @start_thread(%task* %t, i8* %data) noreturn
     ; run the body of the thread
     call void %t(i8* %data)
     ; hey, we are back. cool. find our join list.
+    call void @spinlock(%SpinLock* @runqueue_lock)
     %cur_t   = load %TCB** @current_thread
     %jlptr   = getelementptr %TCB* %cur_t, i32 0, i32 TCB_FIELD_JOINED_THREADS
     %jlist   = load %Queue** %jlptr
@@ -591,6 +633,7 @@ moveAndLoop:
 
 cleanup:
     ; cleanup the current thread
+    call void @spinunlock(%SpinLock* @runqueue_lock)
     %cur     = load %TCB** @current_thread
     %curi8   = bitcast %TCB* %cur to i8*
     %stackP  = getelementptr %TCB* %cur, i32 0, i32 TCB_FIELD_STACK_BOTTOM
@@ -604,14 +647,16 @@ cleanup:
 
 define private void @schedule() naked
 {
-    %queue   = load %Queue** @running_queue
     %tmptime = alloca %TimeSpec
     br label %start
 
 start:
+    call void @spinlock(%SpinLock* @runqueue_lock)
+    %queue   = load %Queue** @running_queue
     call void @wakeReadySleepers()
     ; yank the next thread off the queue
     %next    = call %TCB* @dequeueTCB(%Queue* %queue)
+    call void @spinunlock(%SpinLock* @runqueue_lock)
     %nothr   = icmp eq %TCB* %next, null
     br i1 %nothr, label %emptyRunQueue, label %gotNextThread
 
@@ -653,6 +698,7 @@ gotNextThread:
     ret void
 }
 
+; INVARIANT: The runqueue lock is held while this is run.
 define private void @wakeReadySleepers() alwaysinline
 {
     ; create a new SleepWaiter with the current time and a junk TCB
@@ -681,6 +727,7 @@ promoteItem:
     %tcbp   = getelementptr %SleepWaiter* %nextp, i32 0,
                             i32 SLEEPER_FIELD_THREAD
     %tcb    = load %TCB** %tcbp
+    ; DO NOT LOCK: See invariant
     %rqueue = load %Queue** @running_queue
     call void @enqueueTCB(%Queue* %rqueue, %TCB* %tcb)
     call void @free(i8* %nextpi)
@@ -752,27 +799,4 @@ define private i8 @compareSleepers(i8* %sleep1i, i8* %sleep2i)
     ret i8 %cmp8
 }
 
-; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;
-; Locking
-;
-; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-define void @spinlock(%SpinLock* %lock)
-{
-    br label %spinner
-
-spinner:
-    %res = cmpxchg %SpinLock* %lock, i64 0, i64 1 seq_cst
-    %is0 = icmp eq i64 %res, 0
-    br i1 %is0, label %done, label %spinner
-
-done:
-    ret void
-}
-
-define void @spinunlock(%SpinLock* %lock)
-{
-    store i64 0, %SpinLock* %lock
-    ret void
-}
