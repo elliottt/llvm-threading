@@ -192,7 +192,7 @@ fail:
     ret i64 %res64
 }
 
-define i64 @numProcessors()
+define i64 @num_cores()
 {
     %res    = call i64 @sysconf(i32 _SC_NPROCESSORS_ONLN)
     ret i64 %res
