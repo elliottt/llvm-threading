@@ -21,84 +21,6 @@ import Test.QuickCheck.Monadic
 
 import Debug.Trace
 
-baseTests :: [Test]
-baseTests = [
-  testGroup "Data Structure Tests" [
-    testGroup "Queue Tests" [
-      testCase "Dequeuing from NULL is NULL" qDequeueNullGetNull
-    , testCase "Queue length of NULL is 0" qLengthNullIs0
-    , testProperty "Add one to empty inverts" propq_emptyAddOneInverts
-    , testProperty "Add one to empty has length 1" propq_emptyAddOneLen1
-    , testProperty "Length works" propq_lengthWorksBase
-    , testProperty "Generic add 1 length works" propq_genericAdd1Len
-    , testProperty "Generic remove 1 length works" propq_generalRem1Len
-    , testProperty "Enqueue / dequeue inverts" propq_enqueueDequeueWorks
-    ],
-    testGroup "Sorted List Tests" [
-      testCase "Dequeuing from NULL is NULL" slDequeueNullGetNull
-    , testCase "Queue length of NULL is 0" slLengthNullIs0
-    , testProperty "Add one to empty inverts" propsl_emptyAddOneInverts
-    , testProperty "Add one to empty has length 1" propsl_emptyAddOneLen1
-    , testProperty "Length works" propsl_lengthWorksBase
-    , testProperty "Generic add 1 length works" propsl_genericAdd1Len
-    , testProperty "Generic remove 1 length works" propsl_generalRem1Len
-    , testProperty "Enqueue / dequeue inverts" propsl_enqueueDequeueSorts
-    ],
-    testGroup "Time Functions Tests" [
-      testProperty "Add to 0 works" timeAddTo0Works
-    , testProperty "StandardizeTime works" standardizeTimeWorks
-    , testProperty "AddTime works" addTimeWorks
-    , testProperty "DiffTime works" diffTimeWorks
-    , testProperty "CompareTime works" compareTimeWorks
-    , testProperty "Add builds diff 1" timeAddBuildsDiff1
-    , testProperty "Add builds diff 2" timeAddBuildsDiff2
-    , testProperty "Add builds diff 3" timeAddBuildsDiff3
-    , testProperty "Add builds diff 4" timeAddBuildsDiff4
-    ]
-  ],
-  testGroup "Maybe-Yield Tests" [
-    buildCheckTest "test.maybeYield" maybeYieldCheck
-  ],
-  testGroup "Timer Tests" [
-    buildCheckTest "test.timer1" timerCheck
-  ]
- ]
-
-
-makeTests :: IO [Test]
-makeTests = do
-  basicTs <- buildTestGroup "Basic System Tests" [
-               buildGoldTest "test.basic1"
-             , buildGoldTest "test.basic2"
-             , buildGoldTest "test.basic3"
-             ]
-  chanTs  <- buildTestGroup "Channel Infrastructure Tests" [
-               buildGoldTest "test.chan1"
-             , buildGoldTest "test.chan2"
-             , buildGoldTest "test.chan3"
-             , buildGoldTest "test.chan4"
-             ]
-  joinTs  <- buildTestGroup "Thread-Join Tests" [
-               buildGoldTest "test.join"
-             ]
-  timeTs  <- buildTestGroup "Time Subsystem Tests" [
-               buildGoldTest "test.time1"
-             , buildGoldTest "test.time2"
-             , buildGoldTest "test.time3"
-             ]
-  sleepTs <- buildTestGroup "Sleep Tests" [
-               buildGoldTest "test.sleep1"
-             , buildGoldTest "test.sleep3"
-             , buildGoldTest "test.sleep4"
-             ]
-  return $ baseTests++[basicTs, chanTs, joinTs, timeTs, sleepTs]
-
-buildTestGroup :: String -> [IO Test] -> IO Test
-buildTestGroup x ts = sequence ts >>= (return . testGroup x)
-
-main :: IO ()
-main = makeTests >>= defaultMain
-
 -- --------------------------------------------------------------------------
 --
 -- Generic data structure functions / properties
@@ -559,3 +481,88 @@ timerCheck str =
     []                    -> False
     ("Got a timer!":rest) -> (length rest > 20) && all (== "TICK!") rest
     _                     -> False
+
+-- --------------------------------------------------------------------------
+--
+--  Put everything together
+--
+-- --------------------------------------------------------------------------
+
+baseTests :: [Test]
+baseTests = [
+  testGroup "Data Structure Tests" [
+    testGroup "Queue Tests" [
+      testCase "Dequeuing from NULL is NULL" qDequeueNullGetNull
+    , testCase "Queue length of NULL is 0" qLengthNullIs0
+    , testProperty "Add one to empty inverts" propq_emptyAddOneInverts
+    , testProperty "Add one to empty has length 1" propq_emptyAddOneLen1
+    , testProperty "Length works" propq_lengthWorksBase
+    , testProperty "Generic add 1 length works" propq_genericAdd1Len
+    , testProperty "Generic remove 1 length works" propq_generalRem1Len
+    , testProperty "Enqueue / dequeue inverts" propq_enqueueDequeueWorks
+    ],
+    testGroup "Sorted List Tests" [
+      testCase "Dequeuing from NULL is NULL" slDequeueNullGetNull
+    , testCase "Queue length of NULL is 0" slLengthNullIs0
+    , testProperty "Add one to empty inverts" propsl_emptyAddOneInverts
+    , testProperty "Add one to empty has length 1" propsl_emptyAddOneLen1
+    , testProperty "Length works" propsl_lengthWorksBase
+    , testProperty "Generic add 1 length works" propsl_genericAdd1Len
+    , testProperty "Generic remove 1 length works" propsl_generalRem1Len
+    , testProperty "Enqueue / dequeue inverts" propsl_enqueueDequeueSorts
+    ],
+    testGroup "Time Functions Tests" [
+      testProperty "Add to 0 works" timeAddTo0Works
+    , testProperty "StandardizeTime works" standardizeTimeWorks
+    , testProperty "AddTime works" addTimeWorks
+    , testProperty "DiffTime works" diffTimeWorks
+    , testProperty "CompareTime works" compareTimeWorks
+    , testProperty "Add builds diff 1" timeAddBuildsDiff1
+    , testProperty "Add builds diff 2" timeAddBuildsDiff2
+    , testProperty "Add builds diff 3" timeAddBuildsDiff3
+    , testProperty "Add builds diff 4" timeAddBuildsDiff4
+    ]
+  ],
+  testGroup "Maybe-Yield Tests" [
+    buildCheckTest "test.maybeYield" maybeYieldCheck
+  ],
+  testGroup "Timer Tests" [
+    buildCheckTest "test.timer1" timerCheck
+  ]
+ ]
+
+makeTests :: IO [Test]
+makeTests = do
+  basicTs <- buildTestGroup "Basic System Tests" [
+               buildGoldTest "test.basic1"
+             , buildGoldTest "test.basic2"
+             , buildGoldTest "test.basic3"
+             ]
+  chanTs  <- buildTestGroup "Channel Infrastructure Tests" [
+               buildGoldTest "test.chan1"
+             , buildGoldTest "test.chan2"
+             , buildGoldTest "test.chan3"
+             , buildGoldTest "test.chan4"
+             ]
+  joinTs  <- buildTestGroup "Thread-Join Tests" [
+               buildGoldTest "test.join"
+             ]
+  timeTs  <- buildTestGroup "Time Subsystem Tests" [
+               buildGoldTest "test.time1"
+             , buildGoldTest "test.time2"
+             , buildGoldTest "test.time3"
+             ]
+  sleepTs <- buildTestGroup "Sleep Tests" [
+               buildGoldTest "test.sleep1"
+             , buildGoldTest "test.sleep3"
+             , buildGoldTest "test.sleep4"
+             ]
+  return $ baseTests++[basicTs, chanTs, joinTs, timeTs, sleepTs]
+
+buildTestGroup :: String -> [IO Test] -> IO Test
+buildTestGroup x ts = sequence ts >>= (return . testGroup x)
+
+main :: IO ()
+main = makeTests >>= defaultMain
+
+
