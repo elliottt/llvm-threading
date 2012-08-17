@@ -48,14 +48,20 @@
 %task     = type void(i8*)
 %SpinLock = type i64
 
-@runqueue_lock  = internal thread_local global %SpinLock* null
-@runqueue_count = internal thread_local global i64*       null
-@running_queue  = internal thread_local global %Queue*    null
-@sleeping_queue = internal thread_local global %SortList* null
-@should_change  = internal thread_local global i1         false
-@current_thread = internal thread_local global %TCB*      null
-@original_stack = internal thread_local global %Stack     null
-
+; These are local pointers into global structures
+@runqueue_lock   = internal thread_local global %SpinLock*  null
+@runqueue_count  = internal thread_local global i64*        null
+@running_queue   = internal thread_local global %Queue*     null
+; These are held purely by the local thread
+@core_id         = internal thread_local global i64         0
+@sleeping_queue  = internal thread_local global %SortList*  null
+@should_change   = internal thread_local global i1          false
+@current_thread  = internal thread_local global %TCB*       null
+; These variables are accessible by all the threads in the system
+@original_stack  = internal              global %Stack      null
+@runqueue_locks  = internal              global %SpinLock** null
+@runqueue_counts = internal              global i64**       null
+@running_queues  = internal              global %Queue**    null
 
 
 ; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -83,6 +89,16 @@ define private void @spinunlock(%SpinLock* %lock) alwaysinline
     ret void
 }
 
+define private %SpinLock* @alloc_lock() alwaysinline
+{
+    %ptr_i64  = getelementptr i64* null, i32 1
+    %sz_ptr   = ptrtoint i64* %ptr_i64 to i64
+    %ptr8     = call i8* @malloc(i64 %sz_ptr)
+    %ptr      = bitcast i8* %ptr8 to i64*
+    store i64 0, i64* %ptr
+    ret %SpinLock* %ptr
+}
+
 ; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;
 ; System Initialization
@@ -107,43 +123,118 @@ define private void @setSwitch()
     ret void
 }
 
-@.fail =internal constant [37 x i8] c"System initialization failure: %lli\0a\00"
+define private void @initializeLocalsAndStartTimer(i64 %num)
+{
+    ; transfer the locals that have already been allocated in the globals
+    %locks    = load %SpinLock*** @runqueue_locks
+    %lockp    = getelementptr %SpinLock** %locks, i64 %num
+    %lock     = load %SpinLock** %lockp
+    store %SpinLock* %lock, %SpinLock** @runqueue_lock
+    %counts   = load i64*** @runqueue_counts
+    %countp   = getelementptr i64** %counts, i64 %num
+    %count    = load i64** %countp
+    store i64* %count, i64** @runqueue_count
+    %queues   = load %Queue*** @running_queues
+    %queuep   = getelementptr %Queue** %queues, i64 %num
+    %queue    = load %Queue** %queuep
+    store %Queue* %queue, %Queue** @running_queue
+    ; initialize the thread locals
+    store i64 %num, i64* @core_id
+    %squeue   = call %SortList* @newSortedList(%Comparator* @compareSleepers)
+    store %SortList* %squeue, %SortList** @sleeping_queue
+    store i1 false, i1* @should_change
+    store %TCB* null, %TCB** @current_thread
+    ; start the timers
+    %res      = call i64 @start_thread_timer(%TimeSpec* @.TimeSlice)
+    %isNeg    = icmp slt i64 %res, 0
+    br i1 %isNeg, label %fail, label %succeed
+
+fail:
+    %res32   = trunc i64 %res to i32
+    %failstr = getelementptr [36 x i8]* @.fail, i64 0, i64 0
+    %ign     = call i32(i8*,...)* @printf(i8* %failstr, i64 %res)
+    call void @exit(i32 %res32)
+    unreachable
+
+succeed:
+    ret void
+}
+
+@.fail =internal constant [36 x i8] c"System initialization failure: %li\0a\00"
 
 define private void @run_threaded_system2(%task* %t, i8* %val, i64 %stackSize)
    naked
 {
     %cur_s    = call %Stack @llvm.stacksave()
     store %Stack %cur_s, %Stack* @original_stack
-    br label %setTHandler
+    call void @run_threaded_system3(%task* %t, i8* %val, i64 %stackSize)
+    ret void
+}
 
-setTHandler:
-    %res1     = call i32 @set_timer_handler(%AlarmCallback* @setSwitch)
-    %res641   = sext i32 %res1 to i64
-    %isNeg1   = icmp slt i64 %res641, 0
-    br i1 %isNeg1, label %fail, label %startTimer
+define private void @run_threaded_system3(%task* %t, i8* %val, i64 %stackSize)
+{
+    %ncores   = call i64 @num_cores()
+    br label %initTHTimer
 
-startTimer:
-    %res2     = call i64 @start_thread_timer(%TimeSpec* @.TimeSlice)
-    %isNeg2   = icmp slt i64 %res2, 0
-    br i1 %isNeg2, label %fail, label %systemsGo
+initTHTimer:
+    ; initialize the timer handler
+    %res      = call i32 @set_timer_handler(%AlarmCallback* @setSwitch)
+    %isNeg    = icmp slt i32 %res, 0
+    br i1 %isNeg, label %fail, label %initArrays
 
-systemsGo:
-    ; initialize the running queue
-    %queue    = call %Queue* @newQueue()
-    store %Queue* %queue, %Queue** @running_queue
-    %locki8   = call i8* @malloc(i64 8)
-    %lock     = bitcast i8* %locki8 to %SpinLock*
-    store i64 0, i64* %lock
-    store %SpinLock* %lock, %SpinLock** @runqueue_lock
-    %counti8  = call i8* @malloc(i64 8)
-    %count    = bitcast i8* %counti8 to i64*
-    store i64 1, i64* %count ; we are about to start one, so just start at 1
-    store i64* %count, i64** @runqueue_count
-    ; initialize the sleeping queue
-    %squeue   = call %SortList* @newSortedList(%Comparator* @compareSleepers)
-    store %SortList* %squeue, %SortList** @sleeping_queue
-    ; initialize the current thread to nil for now.
-    store %TCB* null, %TCB** @current_thread
+initArrays:
+    ; allocate the spin lock array
+    %ptr_sl   = getelementptr %SpinLock** null, i32 1
+    %sz_sl    = ptrtoint %SpinLock** %ptr_sl to i64
+    %sz_sls   = mul i64 %sz_sl, %ncores
+    %ptr8_sl  = call i8* @malloc(i64 %sz_sls)
+    %locks    = bitcast i8* %ptr8_sl to %SpinLock**
+    store %SpinLock** %locks, %SpinLock*** @runqueue_locks
+    ; allocate the count array
+    %ptr_c    = getelementptr i64** null, i32 1
+    %sz_c     = ptrtoint i64** %ptr_c to i64
+    %sz_cs    = mul i64 %sz_c, %ncores
+    %ptr8_c   = call i8* @malloc(i64 %sz_cs)
+    %counts   = bitcast i8* %ptr8_c to i64**
+    store i64** %counts, i64*** @runqueue_counts
+    ; allocate the run queue array
+    %ptr_rq   = getelementptr %Queue** null, i32 1
+    %sz_rq    = ptrtoint %Queue** %ptr_rq to i64
+    %sz_rqs   = mul i64 %sz_rq, %ncores
+    %ptr8_rq  = call i8* @malloc(i64 %sz_rqs)
+    %rqueues  = bitcast i8* %ptr8_rq to %Queue**
+    store %Queue** %rqueues, %Queue*** @running_queues
+    ; loop through and initialize the elements of these arrays
+    br label %startInitialization
+
+startInitialization:
+    %i        = phi i64 [0,%initArrays],[%next_i,%loopIt]
+    %lockp    = getelementptr %SpinLock** %locks, i64 %i
+    %countp   = getelementptr i64** %counts, i64 %i
+    %rqueuep  = getelementptr %Queue** %rqueues, i64 %i
+    %lock     = call %SpinLock* @alloc_lock()
+    %count8   = call i8* @malloc(i64 %sz_c)
+    %count    = bitcast i8* %count8 to i64*
+    %rqueue   = call %Queue* @newQueue()
+    store %SpinLock* %lock, %SpinLock** %lockp
+    store i64* %count, i64** %countp
+    store %Queue* %rqueue, %Queue** %rqueuep
+    %is0      = icmp eq i64 %i, 0
+    br i1 %is0, label %initBase, label %initAssoc
+
+initBase:
+    call void @initializeLocalsAndStartTimer(i64 %i)
+    br label %loopIt
+
+initAssoc:
+    br label %loopIt
+
+loopIt:
+    %next_i   = add i64 %i, 1
+    %done     = icmp eq i64 %i, %ncores
+    br i1 %done, label %coresStarted, label %startInitialization
+
+coresStarted:
     ; create the initial thread
     %tcb     = call %TCB* @alloc_tcb() ; the new thread object
     %s       = call %Stack @malloc(i64 %stackSize) ; the new stack
@@ -162,11 +253,9 @@ systemsGo:
     ret void ; probably will not get here
 
 fail:
-    %res     = phi i64 [%res641,%setTHandler],[%res2,%startTimer]
-    %res32   = trunc i64 %res to i32
-    %failstr = getelementptr [37 x i8]* @.fail, i64 0, i64 0
-    %ign     = call i32(i8*,...)* @printf(i8* %failstr, i64 %res)
-    call void @exit(i32 %res32)
+    %failstr = getelementptr [36 x i8]* @.fail, i64 0, i64 0
+    %ign     = call i32(i8*,...)* @printf(i8* %failstr, i32 %res)
+    call void @exit(i32 %res)
     ret void
 }
 
